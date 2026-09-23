@@ -58,9 +58,9 @@ Read output with get_runtime_logs. Reuse nextCursor as cursor for one Instance, 
 ## Simulation and input
 
 - Inspect current settings with get_simulation_state before changing them.
-- Apply network conditions with set_network_profile. Roblox caps packet loss at 0.5 percent.
-- Inspect built-in device IDs with get_device_simulator_state, then apply one with set_device_simulator or compare several with capture_device_matrix.
-- Clear temporary network and device settings with reset_simulation_state after a scenario.
+- Apply network conditions with set_simulation action=network. Roblox caps packet loss at 0.5 percent.
+- List built-in device IDs with get_simulation_state includeDeviceList=true, then apply one with set_simulation action=device or compare several with capture_device_matrix.
+- Clear temporary network and device settings with set_simulation action=reset after a scenario.
 - Capture the viewport with capture_screenshot before simulate_mouse_input so the pixel coordinates match. Keyboard input should target a live client when game input is under test.
 
 ## Debugging and profiling

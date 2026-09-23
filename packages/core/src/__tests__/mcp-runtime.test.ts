@@ -307,12 +307,12 @@ describe('MCP v2 tool runtime', () => {
     const serialized = JSON.stringify(catalog);
     const inspectorCatalog = getReadOnlyTools().map(publicToolDefinition);
 
-    expect(catalog).toHaveLength(45);
+    expect(catalog).toHaveLength(42);
     expect(serialized.length).toBeLessThanOrEqual(44_000);
-    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(44);
+    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(41);
     expect(catalog.every((tool) => tool.description.length <= 120)).toBe(true);
-    expect(inspectorCatalog).toHaveLength(25);
-    expect(JSON.stringify(inspectorCatalog).length).toBeLessThanOrEqual(20_200);
+    expect(inspectorCatalog).toHaveLength(24);
+    expect(JSON.stringify(inspectorCatalog).length).toBeLessThanOrEqual(20_000);
     expect(byName.get('selection')?.outputSchema).toEqual({
       type: 'object',
       additionalProperties: true,

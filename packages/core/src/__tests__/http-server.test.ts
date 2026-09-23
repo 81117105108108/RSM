@@ -197,6 +197,29 @@ describe('HTTP Server', () => {
       expect(getScriptSource).toHaveBeenLastCalledWith('game.ServerScriptService.Main', undefined, undefined, 'place:test');
     });
 
+    test('simulation tools route actions and device reads to the owning methods', async () => {
+      const calls: string[] = [];
+      const track = (name: string) => jest.fn(async () => { calls.push(name); return { content: [] }; });
+      const fakeTools = {
+        getSimulationState: track('getSimulationState'),
+        getDeviceSimulatorState: track('getDeviceSimulatorState'),
+        setNetworkProfile: track('setNetworkProfile'),
+        setDeviceSimulator: track('setDeviceSimulator'),
+        resetSimulationState: track('resetSimulationState'),
+      } as unknown as RobloxStudioTools;
+
+      await TOOL_HANDLERS.get_simulation_state(fakeTools, { include: 'both' });
+      await TOOL_HANDLERS.get_simulation_state(fakeTools, { includeDeviceList: true });
+      await TOOL_HANDLERS.set_simulation(fakeTools, { action: 'network', profile: 'good' });
+      await TOOL_HANDLERS.set_simulation(fakeTools, { action: 'device', deviceId: 'hd_1080' });
+      await TOOL_HANDLERS.set_simulation(fakeTools, { action: 'reset' });
+      expect(calls).toEqual([
+        'getSimulationState', 'getDeviceSimulatorState', 'setNetworkProfile', 'setDeviceSimulator', 'resetSimulationState',
+      ]);
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.set_simulation(fakeTools, { action: 'bogus' })))
+        .rejects.toThrow(/action=network\|device\|reset/);
+    });
+
     test('script line tools parse line_range through the shared handler helpers', async () => {
       const editScriptLines = jest.fn(async () => ({ content: [] }));
       const deleteScriptLines = jest.fn(async () => ({ content: [] }));

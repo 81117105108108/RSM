@@ -39,3 +39,7 @@ The removed names are absent from both `tools/list` and the direct
 | `insert_script_lines` | `edit_script` with `action: "insert"`; `afterLine` is unchanged and `newContent` becomes `new_string` |
 | `delete_script_lines` | `edit_script` with `action: "delete"`; `line_range` is unchanged |
 | `set_script_source` | `edit_script` with `action: "set"`; `source` becomes `new_string` |
+| `set_network_profile` | `set_simulation` with `action: "network"`; other arguments are unchanged |
+| `set_device_simulator` | `set_simulation` with `action: "device"`; other arguments are unchanged |
+| `reset_simulation_state` | `set_simulation` with `action: "reset"`; other arguments are unchanged |
+| `get_device_simulator_state` | `get_simulation_state` with `includeDeviceList: true` or `deviceId` |

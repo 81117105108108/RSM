@@ -39,7 +39,7 @@ describe('HTTP security', () => {
       { label: 'narrow', allowed: new Set(['get_script_source']), endpoint: '/api/place-info', status: 403 },
       { label: 'narrow read', allowed: new Set(['get_script_source']),
         endpoint: '/api/get-script-source', status: 200 },
-      { label: 'simulation read', allowed: new Set(['get_simulation_state', 'get_device_simulator_state']),
+      { label: 'simulation read', allowed: new Set(['get_simulation_state']),
         endpoint: '/api/execute-luau', status: 403 },
     ])('enforces $label configuration', async ({ allowed, endpoint, status }) => {
       const app = createHttpServer(tools, bridge, allowed, undefined, { authToken: token });

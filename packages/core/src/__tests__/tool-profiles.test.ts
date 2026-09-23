@@ -25,21 +25,21 @@ describe('tool profiles', () => {
   });
 
   test('full profile keeps the default surface unchanged', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(45);
-    expect(getAllTools()).toHaveLength(45);
-    expect(getToolsForProfile('full')).toHaveLength(45);
-    expect(getToolsForProfile(undefined)).toHaveLength(45);
+    expect(TOOL_DEFINITIONS).toHaveLength(42);
+    expect(getAllTools()).toHaveLength(42);
+    expect(getToolsForProfile('full')).toHaveLength(42);
+    expect(getToolsForProfile(undefined)).toHaveLength(42);
     expect(new Set(getToolsForProfile('full').map((tool) => tool.name))).toEqual(
       new Set(getAllTools().map((tool) => tool.name)),
     );
-    expect(new Set(getAllTools().map((tool) => tool.name)).size).toBe(45);
+    expect(new Set(getAllTools().map((tool) => tool.name)).size).toBe(42);
   });
 
   test('inspector profile is read-only', () => {
     const inspector = getToolsForProfile('inspector');
     const readOnly = getReadOnlyTools();
-    expect(inspector).toHaveLength(25);
-    expect(readOnly).toHaveLength(25);
+    expect(inspector).toHaveLength(24);
+    expect(readOnly).toHaveLength(24);
     expect(inspector.map((tool) => tool.name)).toEqual(readOnly.map((tool) => tool.name));
     for (const tool of inspector) {
       expect(tool.category).toBe('read');
@@ -63,10 +63,10 @@ describe('tool profiles', () => {
   test('resolver rejects unknown profiles and resolves allowed names', () => {
     expect(() => resolveToolProfile('unknown')).toThrow(/Unknown tool profile/);
     expect(() => getToolsForProfile('unknown')).toThrow(/Unknown tool profile/);
-    expect(resolveAllowedToolNamesForProfile('full').size).toBe(45);
-    expect(resolveAllowedToolNamesForProfile('inspector').size).toBe(25);
+    expect(resolveAllowedToolNamesForProfile('full').size).toBe(42);
+    expect(resolveAllowedToolNamesForProfile('inspector').size).toBe(24);
     expect(resolveAllowedToolNamesForProfile('minimal').size).toBe(12);
-    expect(resolveAllowedToolNamesForProfile(undefined).size).toBe(45);
+    expect(resolveAllowedToolNamesForProfile(undefined).size).toBe(42);
   });
 
   test('server intersects the profile with configured tools via allowedTools', () => {
@@ -76,7 +76,7 @@ describe('tool profiles', () => {
       tools: getAllTools(),
     });
     expect(full.getToolProfile()).toBe('full');
-    expect(((full as unknown) as { allowedToolNames: Set<string> }).allowedToolNames.size).toBe(45);
+    expect(((full as unknown) as { allowedToolNames: Set<string> }).allowedToolNames.size).toBe(42);
 
     const inspector = new RobloxStudioMCPServer({
       name: 'profile-test',
@@ -86,7 +86,7 @@ describe('tool profiles', () => {
     });
     expect(inspector.getToolProfile()).toBe('inspector');
     const inspectorAllowed = ((inspector as unknown) as { allowedToolNames: Set<string> }).allowedToolNames;
-    expect(inspectorAllowed.size).toBe(25);
+    expect(inspectorAllowed.size).toBe(24);
     expect(inspectorAllowed.has('execute_luau')).toBe(false);
     expect(inspectorAllowed.has('get_script_source')).toBe(true);
 

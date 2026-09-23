@@ -74,16 +74,13 @@ await runTest('simulation state tools reset network and device simulator determi
     for (const tool of [
       'solo_playtest',
       'get_simulation_state',
-      'reset_simulation_state',
-      'set_network_profile',
-      'get_device_simulator_state',
-      'set_device_simulator',
+      'set_simulation',
       'capture_device_matrix',
     ]) {
       assert(names.has(tool), `tools/list exposes ${tool}`);
     }
 
-    await client.callTool('reset_simulation_state', { target: 'edit', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'reset', target: 'edit', instance_id: instanceId });
     let state = await client.callTool('get_simulation_state', { target: 'edit', include: 'both', instance_id: instanceId });
     assertNetworkValues(state.roles.edit, Object.fromEntries(NETWORK_KEYS.map((key) => [key, 0])), 'edit baseline');
     assertDeviceDefault(state.roles.edit, 'edit baseline');
@@ -106,13 +103,13 @@ await runTest('simulation state tools reset network and device simulator determi
     assert(playStart.success === true, 'normal Play starts');
     assert(playStart.roles.includes('client-1'), 'normal Play registers client-1');
 
-    const playReset = await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+    const playReset = await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
     assert(roleKeys(playReset).includes('edit'), 'normal Play reset includes edit');
     assert(roleKeys(playReset).includes('client-1'), 'normal Play reset includes client-1');
     assert(!roleKeys(playReset).includes('server'), 'normal Play reset skips server');
 
-    await client.callTool('set_network_profile', { target: 'client-1', profile: 'good', instance_id: instanceId });
-    await client.callTool('set_device_simulator', {
+    await client.callTool('set_simulation', { action: 'network', target: 'client-1', profile: 'good', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'device',
       target: 'client-1',
       deviceId: 'iphone_XR',
       orientation: 'LandscapeRight',
@@ -130,7 +127,7 @@ await runTest('simulation state tools reset network and device simulator determi
     assertDeviceActive(state.roles['client-1'], 'iphone_XR', 'normal Play client');
 
     await expectToolFailure(
-      () => client.callTool('set_network_profile', {
+      () => client.callTool('set_simulation', { action: 'network',
         target: 'client-1',
         profile: 'custom',
         overrides: { InboundNetworkLossPercent: 0.5001 },
@@ -140,11 +137,11 @@ await runTest('simulation state tools reset network and device simulator determi
       'packet-loss over engine limit',
     );
 
-    await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
     await client.callTool('solo_playtest', { action: 'stop', instance_id: instanceId });
     playStarted = false;
     await delay(1000);
-    await client.callTool('reset_simulation_state', { target: 'edit', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'reset', target: 'edit', instance_id: instanceId });
 
     const multiplayerStart = await client.callTool('multiplayer_playtest', {
       action: 'start',
@@ -157,7 +154,7 @@ await runTest('simulation state tools reset network and device simulator determi
     assert(multiplayerStart.roles.includes('client-1'), 'multiplayer registers client-1');
     assert(multiplayerStart.roles.includes('client-2'), 'multiplayer registers client-2');
 
-    const multiplayerReset = await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+    const multiplayerReset = await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
     assert(roleKeys(multiplayerReset).includes('edit'), 'multiplayer reset includes edit');
     assert(roleKeys(multiplayerReset).includes('client-1'), 'multiplayer reset includes client-1');
     assert(roleKeys(multiplayerReset).includes('client-2'), 'multiplayer reset includes client-2');
@@ -169,8 +166,8 @@ await runTest('simulation state tools reset network and device simulator determi
     assertDeviceDefault(state.roles['client-1'], 'multiplayer client-1 after reset');
     assertDeviceDefault(state.roles['client-2'], 'multiplayer client-2 after reset');
 
-    await client.callTool('set_network_profile', { target: 'all-clients', profile: 'poor', instance_id: instanceId });
-    await client.callTool('set_device_simulator', {
+    await client.callTool('set_simulation', { action: 'network', target: 'all-clients', profile: 'poor', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'device',
       target: 'all-clients',
       deviceId: 'iphone_XR',
       orientation: 'LandscapeRight',
@@ -204,11 +201,11 @@ await runTest('simulation state tools reset network and device simulator determi
       'multiplayer client matrix capture',
     );
 
-    await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
     await client.callTool('multiplayer_playtest', { action: 'end', timeout: 45, instance_id: instanceId });
     multiplayerStarted = false;
     await delay(1000);
-    await client.callTool('reset_simulation_state', { target: 'edit', instance_id: instanceId });
+    await client.callTool('set_simulation', { action: 'reset', target: 'edit', instance_id: instanceId });
 
     const finalState = await client.callTool('get_simulation_state', { target: 'edit', include: 'both', instance_id: instanceId });
     assertNetworkValues(finalState.roles.edit, Object.fromEntries(NETWORK_KEYS.map((key) => [key, 0])), 'final edit');
@@ -217,7 +214,7 @@ await runTest('simulation state tools reset network and device simulator determi
     if (instanceId) {
       if (multiplayerStarted) {
         try {
-          await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+          await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
         } catch {
           // Best-effort cleanup.
         }
@@ -229,7 +226,7 @@ await runTest('simulation state tools reset network and device simulator determi
       }
       if (playStarted) {
         try {
-          await client.callTool('reset_simulation_state', { target: 'edit-and-clients', instance_id: instanceId });
+          await client.callTool('set_simulation', { action: 'reset', target: 'edit-and-clients', instance_id: instanceId });
         } catch {
           // Best-effort cleanup.
         }
@@ -240,7 +237,7 @@ await runTest('simulation state tools reset network and device simulator determi
         }
       }
       try {
-        await client.callTool('reset_simulation_state', { target: 'edit', instance_id: instanceId });
+        await client.callTool('set_simulation', { action: 'reset', target: 'edit', instance_id: instanceId });
       } catch {
         // Best-effort cleanup.
       }

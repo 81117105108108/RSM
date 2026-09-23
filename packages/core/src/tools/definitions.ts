@@ -549,20 +549,56 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     }
   },
   {
-    name: 'set_network_profile',
-    category: 'write',
-    description: 'Use to simulate client latency, jitter, or packet loss.',
+    name: 'get_simulation_state',
+    category: 'read',
+    description: 'Use to inspect network and device simulation, or list built-in device presets.',
     inputSchema: {
       type: 'object',
       properties: {
-        profile: {
+        include: {
           type: 'string',
-          enum: ['great', 'good', 'poor', 'custom'],
-          description: 'Network preset; custom requires overrides.'
+          enum: ['network', 'deviceSimulator', 'both'],
+          description: 'State group; defaults to both.'
         },
         target: {
           type: 'string',
-          description: 'Client peer or all-clients; defaults to client-1.'
+          description: 'Edit or client scope; servers are invalid.'
+        },
+        deviceId: {
+          type: 'string',
+          description: 'Inspect one device preset on a single peer.'
+        },
+        includeDeviceList: {
+          type: 'boolean',
+          description: 'List built-in device presets for a single peer.'
+        },
+        instance_id: {
+          type: 'string',
+          description: 'Studio process ID when ambiguous.'
+        }
+      }
+    }
+  },
+  {
+    name: 'set_simulation',
+    category: 'write',
+    description: 'Use to apply network conditions or a device preset, or reset simulation state.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['network', 'device', 'reset'],
+          description: 'reset clears network and device simulation.'
+        },
+        target: {
+          type: 'string',
+          description: 'network: client-N or all-clients. device/reset: edit or clients.'
+        },
+        profile: {
+          type: 'string',
+          enum: ['great', 'good', 'poor', 'custom'],
+          description: 'network: preset; custom requires overrides.'
         },
         overrides: {
           type: 'object',
@@ -601,109 +637,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
               description: 'Client-to-server packet loss percent.'
             }
           },
-          description: 'NetworkSettings fields that override or define the profile.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      },
-      required: ['profile']
-    }
-  },
-  {
-    name: 'get_simulation_state',
-    category: 'read',
-    description: 'Use to inspect current network and device simulation.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        include: {
-          type: 'string',
-          enum: ['network', 'deviceSimulator', 'both'],
-          description: 'State group; defaults to both.'
-        },
-        target: {
-          type: 'string',
-          description: 'Edit or client scope; servers are invalid.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      }
-    }
-  },
-  {
-    name: 'reset_simulation_state',
-    category: 'write',
-    description: 'Use to clear network and device simulation state.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: {
-          type: 'string',
-          description: 'Edit or client scope; servers are invalid.'
-        },
-        network: {
-          type: 'boolean',
-          description: 'Reset network simulation; defaults to true.'
-        },
-        deviceSimulator: {
-          type: 'boolean',
-          description: 'Stop device simulation; defaults to true.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      }
-    }
-  },
-  {
-    name: 'get_device_simulator_state',
-    category: 'read',
-    description: 'Use to inspect device simulation or list device presets.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: {
-          type: 'string',
-          description: 'Edit or client peer; defaults to edit. Servers are invalid.'
+          description: 'network: NetworkSettings fields that override the preset.'
         },
         deviceId: {
           type: 'string',
-          description: 'Built-in preset to inspect.'
-        },
-        includeDeviceList: {
-          type: 'boolean',
-          description: 'Include built-in presets; defaults to true.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      }
-    }
-  },
-  {
-    name: 'set_device_simulator',
-    category: 'write',
-    description: 'Use to manage device simulation in edit or a playtest client.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        target: {
-          type: 'string',
-          description: 'Edit, client-N, or all-clients; defaults to edit.'
-        },
-        deviceId: {
-          type: 'string',
-          description: 'Built-in device preset ID.'
+          description: 'device: built-in device preset ID.'
         },
         orientation: {
           type: 'string',
-          description: 'ScreenOrientation enum name.'
+          description: 'device: ScreenOrientation enum name.'
         },
         resolution: {
           type: 'object',
@@ -719,25 +661,34 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
             }
           },
           required: ['width', 'height'],
-          description: 'Resolution override after the preset.'
+          description: 'device: resolution override after the preset.'
         },
         pixelDensity: {
           type: 'number',
-          description: 'Positive density override after the preset.'
+          description: 'device: positive density override after the preset.'
         },
         scalingMode: {
           type: 'string',
-          description: 'DeviceSimulatorScalingMode enum name.'
+          description: 'device: DeviceSimulatorScalingMode enum name.'
         },
         stopSimulation: {
           type: 'boolean',
-          description: 'Stop simulation; excludes other simulator settings.'
+          description: 'device: stop simulation; excludes other settings.'
+        },
+        network: {
+          type: 'boolean',
+          description: 'reset: network simulation; defaults to true.'
+        },
+        deviceSimulator: {
+          type: 'boolean',
+          description: 'reset: device simulation; defaults to true.'
         },
         instance_id: {
           type: 'string',
           description: 'Studio process ID when ambiguous.'
         }
-      }
+      },
+      required: ['action']
     }
   },
   {

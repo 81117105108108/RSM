@@ -219,6 +219,10 @@ async function runEditModeToolSmoke(client, instanceId) {
     'edit_script_lines',
     'insert_script_lines',
     'delete_script_lines',
+    'set_network_profile',
+    'reset_simulation_state',
+    'get_device_simulator_state',
+    'set_device_simulator',
   ]) {
     assert(!names.has(removed), `tools/list omits removed ${removed}`);
   }

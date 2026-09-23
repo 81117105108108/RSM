@@ -281,11 +281,8 @@ describe('Tool schema compatibility', () => {
       execute_luau: 'executeLuau',
       eval_server_runtime: 'evalServerRuntime',
       eval_client_runtime: 'evalClientRuntime',
-      set_network_profile: 'setNetworkProfile',
       get_simulation_state: 'getSimulationState',
-      reset_simulation_state: 'resetSimulationState',
-      get_device_simulator_state: 'getDeviceSimulatorState',
-      set_device_simulator: 'setDeviceSimulator',
+      set_simulation: 'setNetworkProfile',
       capture_device_matrix: 'captureDeviceMatrix',
       manage_instance: 'manageInstance',
       solo_playtest: 'soloPlaytest',
@@ -558,27 +555,24 @@ describe('Tool schema compatibility', () => {
     expect((props.timeout_ms as { minimum?: number; maximum?: number; default?: number }).default).toBe(120000);
   });
 
-  test('device simulator schemas expose target routing and matrix entries', () => {
-    const getTool = TOOL_DEFINITIONS.find((t) => t.name === 'get_device_simulator_state');
-    const setTool = TOOL_DEFINITIONS.find((t) => t.name === 'set_device_simulator');
+  test('simulation schemas split reads from writes and keep matrix entries', () => {
+    const getTool = TOOL_DEFINITIONS.find((t) => t.name === 'get_simulation_state');
+    const setTool = TOOL_DEFINITIONS.find((t) => t.name === 'set_simulation');
     const matrixTool = TOOL_DEFINITIONS.find((t) => t.name === 'capture_device_matrix');
-    expect(getTool).toBeTruthy();
-    expect(setTool).toBeTruthy();
+    expect(getTool?.category).toBe('read');
+    expect(setTool?.category).toBe('write');
     expect(matrixTool).toBeTruthy();
 
     const getProps = (getTool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(getProps).sort()).toEqual(['deviceId', 'includeDeviceList', 'instance_id', 'target'].sort());
+    expect(Object.keys(getProps).sort()).toEqual(['deviceId', 'include', 'includeDeviceList', 'instance_id', 'target'].sort());
+    expect((getProps.include as { enum?: string[] }).enum).toEqual(['network', 'deviceSimulator', 'both']);
 
-    const setProps = (setTool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(setProps).sort()).toEqual([
-      'deviceId',
-      'instance_id',
-      'orientation',
-      'pixelDensity',
-      'resolution',
-      'scalingMode',
-      'stopSimulation',
-      'target',
+    const setSchema = setTool!.inputSchema as { properties?: Record<string, { enum?: string[] }>; required?: string[] };
+    expect(setSchema.required).toEqual(['action']);
+    expect(setSchema.properties?.action.enum).toEqual(['network', 'device', 'reset']);
+    expect(Object.keys(setSchema.properties ?? {}).sort()).toEqual([
+      'action', 'deviceId', 'deviceSimulator', 'instance_id', 'network', 'orientation', 'overrides',
+      'pixelDensity', 'profile', 'resolution', 'scalingMode', 'stopSimulation', 'target',
     ].sort());
 
     const matrixSchema = matrixTool!.inputSchema as {
@@ -588,26 +582,12 @@ describe('Tool schema compatibility', () => {
     expect(matrixSchema.required).toEqual(['entries']);
     expect(matrixSchema.properties?.entries.items).toBeTruthy();
     expect(matrixSchema.properties?.entries.maxItems).toBe(6);
-  });
-
-  test('simulation state schemas expose inspect and reset controls', () => {
-    const getTool = TOOL_DEFINITIONS.find((t) => t.name === 'get_simulation_state');
-    const resetTool = TOOL_DEFINITIONS.find((t) => t.name === 'reset_simulation_state');
-    expect(getTool).toBeTruthy();
-    expect(resetTool).toBeTruthy();
-
-    const getProps = (getTool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(getProps).sort()).toEqual(['include', 'instance_id', 'target'].sort());
-    expect((getProps.include as { enum?: string[] }).enum).toEqual(['network', 'deviceSimulator', 'both']);
-
-    const resetProps = (resetTool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(resetProps).sort()).toEqual(['deviceSimulator', 'instance_id', 'network', 'target'].sort());
     expect(TOOL_GUIDE_MARKDOWN).toContain('Inspect current settings with get_simulation_state before changing them');
-    expect(TOOL_GUIDE_MARKDOWN).toContain('reset_simulation_state after a scenario');
+    expect(TOOL_GUIDE_MARKDOWN).toContain('set_simulation action=reset after a scenario');
   });
 
-  test('set_network_profile schema caps packet loss at Roblox engine limit', () => {
-    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'set_network_profile');
+  test('set_simulation network overrides cap packet loss at Roblox engine limit', () => {
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === 'set_simulation');
     expect(tool).toBeTruthy();
     const props = (tool!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
     const overrides = props.overrides as { properties?: Record<string, { minimum?: number; maximum?: number }> };

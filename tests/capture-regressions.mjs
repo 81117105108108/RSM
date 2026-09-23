@@ -100,7 +100,7 @@ await runTest('Screenshot beta and legacy regressions', async ({ track }) => {
   const instance = topology.instances.find(item => item.id === instanceId);
   assert.ok(instance?.peers.edit);
   assert.ok(!instance.peers.server && !instance.peers['client-1'], 'Start with an idle Studio');
-  const simulator = await tool('get_device_simulator_state', { target: 'edit' });
+  const simulator = await tool('get_simulation_state', { includeDeviceList: true, target: 'edit' });
   assert.equal(simulator.isSimulating, false, 'Start with device simulation off');
   const capability = await execute("return {can=game:GetService('StudioCaptureService'):CanCaptureScreenshot()}");
   assert.equal(capability.can, enabled, 'Studio must be restarted with the expected beta flag');
@@ -115,7 +115,7 @@ await runTest('Screenshot beta and legacy regressions', async ({ track }) => {
     console.log(`Edit PNG/JPEG and quality passed (beta ${expectation}, proxy=${client.isProxy()})`);
     // A stable density override creates a logical/framebuffer size mismatch on
     // desktop monitors without changing Windows display settings.
-    await tool('set_device_simulator', { target: 'edit', deviceId: 'hd_1080', resolution: { width: 1600, height: 900 }, pixelDensity: 88 });
+    await tool('set_simulation', { action: 'device', target: 'edit', deviceId: 'hd_1080', resolution: { width: 1600, height: 900 }, pixelDensity: 88 });
     playing = true;
     assert.equal((await tool('solo_playtest', { action: 'start', mode: 'play' })).success, true);
     await execute(`
@@ -139,14 +139,14 @@ game:GetService('RunService').RenderStepped:Wait();game:GetService('RunService')
     }
     await capture('jpeg');
     console.log(`Scaled play PNG/JPEG passed: ${image.width}x${image.height}; markers ${magenta}, ${cyan}`);
-    await tool('set_device_simulator', { target: 'client-1', resolution: { width: 3840, height: 2160 }, pixelDensity: 96 });
+    await tool('set_simulation', { action: 'device', target: 'client-1', resolution: { width: 3840, height: 2160 }, pixelDensity: 96 });
     await execute("game:GetService('RunService').RenderStepped:Wait();game:GetService('RunService').RenderStepped:Wait();return true", 'client-1');
     await capture('jpeg', 70);
     await capture('jpeg', 90);
     if (enabled) {
       // Two 4K base64 responses exceed the separate 64 MiB WebSocket
       // retained-result budget. Exercise concurrent chunks within that bound.
-      await tool('set_device_simulator', { target: 'client-1', resolution: { width: 2560, height: 1440 } });
+      await tool('set_simulation', { action: 'device', target: 'client-1', resolution: { width: 2560, height: 1440 } });
       await execute("game:GetService('RunService').RenderStepped:Wait();game:GetService('RunService').RenderStepped:Wait();return true", 'client-1');
       const concurrent = await Promise.allSettled([capture('jpeg', 70), capture('jpeg', 90)]);
       for (const result of concurrent) {
@@ -158,7 +158,7 @@ game:GetService('RunService').RenderStepped:Wait();game:GetService('RunService')
     console.log(`4K play JPEGs${enabled ? ' and concurrent 1440p transfers' : ''} passed; client remains connected`);
   } finally {
     if (playing) await tool('solo_playtest', { action: 'stop' });
-    await tool('set_device_simulator', { target: 'edit', stopSimulation: true });
+    await tool('set_simulation', { action: 'device', target: 'edit', stopSimulation: true });
   }
   await capture('png');
   console.log('Post-play edit capture passed');

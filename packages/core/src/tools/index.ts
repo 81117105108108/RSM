@@ -469,7 +469,7 @@ export class RobloxStudioTools {
       return { instanceId, selectedTarget, roles };
     }
 
-    const resolved = this._resolveDeviceSimulatorSingleTarget(selectedTarget, instance_id, 'set_device_simulator');
+    const resolved = this._resolveDeviceSimulatorSingleTarget(selectedTarget, instance_id, 'set_simulation action=device');
     return { instanceId: resolved.instanceId, selectedTarget, roles: [resolved.role] };
   }
 
@@ -1107,7 +1107,7 @@ export class RobloxStudioTools {
       }
       targetRoles = [selectedTarget];
     } else {
-      throw new Error(`set_network_profile target must be "client-N" or "all-clients" (got: ${selectedTarget})`);
+      throw new Error(`set_simulation action=network target must be "client-N" or "all-clients" (got: ${selectedTarget})`);
     }
 
     if (targetRoles.length === 0) {
@@ -1122,7 +1122,7 @@ export class RobloxStudioTools {
     const responses = await Promise.allSettled(
       targetRoles.map(async (role) => {
         const response = await this._request('/api/execute-luau', { code }, instanceId, role);
-        const result = this._parseExecuteLuauJsonResponse(response, 'set_network_profile');
+        const result = this._parseExecuteLuauJsonResponse(response, 'set_simulation action=network');
         return { role, result };
       }),
     );
@@ -1148,7 +1148,7 @@ export class RobloxStudioTools {
     }
 
     if (failures.length > 0) {
-      throw new Error(`set_network_profile failed for ${failures.join('; ')}. Partial result: ${JSON.stringify(body)}`);
+      throw new Error(`set_simulation action=network failed for ${failures.join('; ')}. Partial result: ${JSON.stringify(body)}`);
     }
 
     return {
@@ -1223,12 +1223,12 @@ export class RobloxStudioTools {
     const resetNetwork = network !== false;
     const resetDeviceSimulator = deviceSimulator !== false;
     if (!resetNetwork && !resetDeviceSimulator) {
-      throw new Error('reset_simulation_state requires network=true and/or deviceSimulator=true; both default to true');
+      throw new Error('set_simulation action=reset requires network=true and/or deviceSimulator=true; both default to true');
     }
 
     const refresh = this.bridge.refreshTopologyForRouting();
     if (refresh) await refresh;
-    const resolved = this._resolveSimulationTargets(target, instance_id, 'reset_simulation_state');
+    const resolved = this._resolveSimulationTargets(target, instance_id, 'set_simulation action=reset');
     const roleEntries = await Promise.all(resolved.roles.map(async (role) => {
       const result: Record<string, unknown> = {};
       const errors: Record<string, string> = {};
@@ -1284,7 +1284,7 @@ export class RobloxStudioTools {
     };
 
     if (failures.length > 0) {
-      throw new Error(`reset_simulation_state failed for ${failures.join('; ')}. Partial result: ${JSON.stringify({ ...body, roles: rawRoles })}`);
+      throw new Error(`set_simulation action=reset failed for ${failures.join('; ')}. Partial result: ${JSON.stringify({ ...body, roles: rawRoles })}`);
     }
 
     return {
@@ -1301,7 +1301,7 @@ export class RobloxStudioTools {
     }
     const refresh = this.bridge.refreshTopologyForRouting();
     if (refresh) await refresh;
-    const resolved = this._resolveDeviceSimulatorSingleTarget(target, instance_id, 'get_device_simulator_state');
+    const resolved = this._resolveDeviceSimulatorSingleTarget(target, instance_id, 'get_simulation_state');
     const state = await this._executeDeviceSimulatorOperation(
       resolved.instanceId,
       resolved.role,
@@ -1338,7 +1338,7 @@ export class RobloxStudioTools {
       throw new Error('stopSimulation=true cannot be combined with deviceId, orientation, resolution, pixelDensity, or scalingMode');
     }
     if (stopSimulation !== true && !hasDeviceSimulatorSettings(settings)) {
-      throw new Error('set_device_simulator requires stopSimulation=true or at least one simulator setting');
+      throw new Error('set_simulation action=device requires stopSimulation=true or at least one simulator setting');
     }
 
     const refresh = this.bridge.refreshTopologyForRouting();
@@ -1375,7 +1375,7 @@ export class RobloxStudioTools {
     }
 
     if (failures.length > 0) {
-      throw new Error(`set_device_simulator failed for ${failures.join('; ')}. Partial result: ${JSON.stringify(body)}`);
+      throw new Error(`set_simulation action=device failed for ${failures.join('; ')}. Partial result: ${JSON.stringify(body)}`);
     }
 
     return {

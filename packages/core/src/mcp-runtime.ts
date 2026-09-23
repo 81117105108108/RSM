@@ -83,9 +83,7 @@ const NON_DESTRUCTIVE_SIDE_EFFECT_TOOLS = new Set([
 const IDEMPOTENT_WRITE_TOOLS = new Set([
   'capture_device_matrix',
   'export_rbxm',
-  'reset_simulation_state',
-  'set_device_simulator',
-  'set_network_profile',
+  'set_simulation',
   'set_properties',
   'selection',
 ]);

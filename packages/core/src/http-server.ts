@@ -224,11 +224,22 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   execute_luau: (tools, body) => tools.executeLuau(body.code, body.target, body.instance_id, body.operation_id),
   eval_server_runtime: (tools, body) => tools.evalServerRuntime(body.code, body.instance_id),
   eval_client_runtime: (tools, body) => tools.evalClientRuntime(body.code, body.target, body.instance_id),
-  set_network_profile: (tools, body) => tools.setNetworkProfile(body.profile, body.target, body.overrides, body.instance_id),
-  get_simulation_state: (tools, body) => tools.getSimulationState(body.include, body.target, body.instance_id),
-  reset_simulation_state: (tools, body) => tools.resetSimulationState(body.target, body.network, body.deviceSimulator, body.instance_id),
-  get_device_simulator_state: (tools, body) => tools.getDeviceSimulatorState(body.target, body.deviceId, body.includeDeviceList, body.instance_id),
-  set_device_simulator: (tools, body) => tools.setDeviceSimulator(body.target, body.deviceId, body.orientation, body.resolution, body.pixelDensity, body.scalingMode, body.stopSimulation, body.instance_id),
+  // Device preset detail is single-peer; the aggregate view fans out across roles.
+  get_simulation_state: (tools, body) => body.deviceId !== undefined || body.includeDeviceList !== undefined
+    ? tools.getDeviceSimulatorState(body.target, body.deviceId, body.includeDeviceList, body.instance_id)
+    : tools.getSimulationState(body.include, body.target, body.instance_id),
+  set_simulation: (tools, body) => {
+    switch (body.action) {
+      case 'network':
+        return tools.setNetworkProfile(body.profile, body.target, body.overrides, body.instance_id);
+      case 'device':
+        return tools.setDeviceSimulator(body.target, body.deviceId, body.orientation, body.resolution, body.pixelDensity, body.scalingMode, body.stopSimulation, body.instance_id);
+      case 'reset':
+        return tools.resetSimulationState(body.target, body.network, body.deviceSimulator, body.instance_id);
+      default:
+        throw new Error('set_simulation requires action=network|device|reset');
+    }
+  },
   capture_device_matrix: (tools, body) => tools.captureDeviceMatrix(body.entries, body.target, body.format, body.quality, body.settleSeconds, body.restoreAfter, body.instance_id),
   manage_instance: (tools, body) => tools.manageInstance(body),
   solo_playtest: (tools, body) => tools.soloPlaytest(body.action, body.mode, body.timeout, body.instance_id),

@@ -3713,7 +3713,7 @@ describe('Smoke', () => {
     });
     bridge.rejectRequest(client2Pending!.requestId, new Error('client-2 disconnected'));
 
-    await expect(resultPromise).rejects.toThrow(/set_network_profile failed.*client-2.*disconnected/);
+    await expect(resultPromise).rejects.toThrow(/set_simulation action=network failed.*client-2.*disconnected/);
   });
 
   test('set_network_profile rejects packet loss above Roblox engine limit', async () => {
@@ -4016,7 +4016,7 @@ describe('Smoke', () => {
     expect(pending?.request).toMatchObject({ endpoint: '/api/execute-luau' });
     bridge.rejectRequest(pending!.requestId, new Error('network reset boom'));
 
-    await expect(resultPromise).rejects.toThrow(/reset_simulation_state failed.*edit\.network.*network reset boom/);
+    await expect(resultPromise).rejects.toThrow(/set_simulation action=reset failed.*edit\.network.*network reset boom/);
   });
 
   test('reset_simulation_state warns but does not fail when all-clients has no clients', async () => {
@@ -4196,7 +4196,7 @@ describe('Smoke', () => {
     });
     bridge.rejectRequest(client2Pending!.requestId, new Error('client-2 simulator failed'));
 
-    await expect(resultPromise).rejects.toThrow(/set_device_simulator failed.*client-2.*simulator failed/);
+    await expect(resultPromise).rejects.toThrow(/set_simulation action=device failed.*client-2.*simulator failed/);
   });
 
   test('capture_device_matrix rejects unsupported targets', async () => {

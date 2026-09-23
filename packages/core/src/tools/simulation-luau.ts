@@ -316,7 +316,7 @@ local function assertBuiltInDeviceExists(deviceId)
 \tlocal available = {}
 \tfor id in pairs(ids) do table.insert(available, id) end
 \ttable.sort(available)
-\terror('deviceId "' .. tostring(deviceId) .. '" is not an available built-in device. Use get_device_simulator_state to list supported device IDs. Available: ' .. table.concat(available, ", "), 0)
+\terror('deviceId "' .. tostring(deviceId) .. '" is not an available built-in device. Use get_simulation_state includeDeviceList=true to list supported device IDs. Available: ' .. table.concat(available, ", "), 0)
 end
 
 local function enumByName(enumType, raw, label)
