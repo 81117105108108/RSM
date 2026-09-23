@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -86,6 +87,16 @@ try {
     /FILETIME/,
     'exact close refuses a PID without process creation identity',
   );
+
+  // The process that isolates Studio restores the user's value when it exits.
+  writeFileSync(settingsPath, original);
+  const lifecycleUrl = new URL('../scripts/studio-lifecycle.mjs', import.meta.url).href;
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import { configureStudioDirectoryIsolation } from ${JSON.stringify(lifecycleUrl)};
+    const result = await configureStudioDirectoryIsolation({ settingsPath: ${JSON.stringify(settingsPath)}, requireStudioClosed: false });
+    if (!result.changed) process.exit(2);
+  `]);
+  assert.equal(readFileSync(settingsPath, 'utf8'), original, 'isolating process restores PluginsDir on exit');
 
   writeFileSync(
     settingsPath,

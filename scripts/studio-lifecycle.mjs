@@ -114,6 +114,51 @@ export function readStudioPluginDirectorySetting(
   };
 }
 
+function writePluginDirectorySetting(settingsPath, value) {
+  const contents = readFileSync(settingsPath, 'utf8');
+  const updated = contents.replace(
+    pluginDirectorySettingPattern(),
+    (_match, open, _value, close) => `${open}${value}${close}`,
+  );
+  const temporaryPath = `${settingsPath}.rsmcp-${process.pid}-${Date.now()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, updated, {
+      encoding: 'utf8',
+      mode: statSync(settingsPath).mode,
+    });
+    renameSync(temporaryPath, settingsPath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
+let pluginDirectoryRestoreRegistered = false;
+
+// Studio.PluginsDir is a global user setting. The process that switched it to the
+// isolated directory puts the user's value back when it exits, including on
+// failure or Ctrl+C. Child runners find it already configured and never restore.
+// ponytail: a second independent runner started while the first is active loses
+// isolation when the first exits; use a refcounted lease if runners ever overlap.
+function restorePluginDirectoryOnExit(settingsPath, previousValue, isolatedValue) {
+  if (pluginDirectoryRestoreRegistered) return;
+  pluginDirectoryRestoreRegistered = true;
+  process.once('exit', () => {
+    try {
+      if (!existsSync(settingsPath)) return;
+      // Leave a value someone else changed after isolation alone.
+      if (readStudioPluginDirectorySetting(settingsPath).value !== isolatedValue) return;
+      writePluginDirectorySetting(settingsPath, previousValue);
+    } catch (error) {
+      console.error(
+        `Could not restore Studio.PluginsDir to ${JSON.stringify(previousValue)} in ${settingsPath}: ${error}`,
+      );
+    }
+  });
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.once(signal, () => process.exit(128 + (os.constants.signals[signal] ?? 1)));
+  }
+}
+
 export async function configureStudioDirectoryIsolation({
   settingsPath = resolveStudioGlobalSettingsPath(),
   relativePluginsDirectory = ISOLATED_STUDIO_PLUGINS_DIR_NAME,
@@ -144,26 +189,13 @@ export async function configureStudioDirectoryIsolation({
       );
     }
 
-    const contents = readFileSync(settingsPath, 'utf8');
-    const updated = contents.replace(
-      pluginDirectorySettingPattern(),
-      (_match, open, _value, close) => `${open}${relativePluginsDirectory}${close}`,
-    );
-    const temporaryPath = `${settingsPath}.rsmcp-${process.pid}-${Date.now()}.tmp`;
-    try {
-      writeFileSync(temporaryPath, updated, {
-        encoding: 'utf8',
-        mode: statSync(settingsPath).mode,
-      });
-      renameSync(temporaryPath, settingsPath);
-    } finally {
-      rmSync(temporaryPath, { force: true });
-    }
+    writePluginDirectorySetting(settingsPath, relativePluginsDirectory);
 
     const configured = readStudioPluginDirectorySetting(settingsPath);
     if (configured.value !== relativePluginsDirectory) {
       throw new Error(`Studio.PluginsDir remained ${JSON.stringify(configured.value)} after configuration.`);
     }
+    restorePluginDirectoryOnExit(settingsPath, current.value, relativePluginsDirectory);
     return { ...configured, configured: true, changed: true };
   } finally {
     await releaseSettingsLock();
