@@ -76,6 +76,20 @@ describe('MCP v2 tool runtime', () => {
     ]);
   });
 
+  test('parses a JSON text projection once', () => {
+    const parse = jest.spyOn(JSON, 'parse');
+    try {
+      const result = normalizeToolResult({
+        content: [{ type: 'text', text: '{"success":true,"value":42}' }],
+      }, 'modern');
+
+      expect(result.structuredContent).toEqual({ success: true, value: 42 });
+      expect(parse).toHaveBeenCalledTimes(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
   describe.each(['modern', 'legacy'] as const)('%s handler failure projection', (era) => {
     test.each([
       { error: 'Instance not found' },
@@ -293,12 +307,12 @@ describe('MCP v2 tool runtime', () => {
     const serialized = JSON.stringify(catalog);
     const inspectorCatalog = getReadOnlyTools().map(publicToolDefinition);
 
-    expect(catalog).toHaveLength(48);
+    expect(catalog).toHaveLength(45);
     expect(serialized.length).toBeLessThanOrEqual(44_000);
-    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(47);
+    expect(catalog.filter((tool) => tool.outputSchema)).toHaveLength(44);
     expect(catalog.every((tool) => tool.description.length <= 120)).toBe(true);
     expect(inspectorCatalog).toHaveLength(25);
-    expect(JSON.stringify(inspectorCatalog).length).toBeLessThanOrEqual(20_000);
+    expect(JSON.stringify(inspectorCatalog).length).toBeLessThanOrEqual(20_200);
     expect(byName.get('selection')?.outputSchema).toEqual({
       type: 'object',
       additionalProperties: true,
@@ -386,7 +400,7 @@ describe('MCP v2 tool runtime', () => {
     ]) {
       expect(byName.get(openWorldTool)?.annotations.openWorldHint).toBe(true);
     }
-    expect(byName.get('edit_script_lines')?.annotations.idempotentHint).toBe(false);
+    expect(byName.get('edit_script')?.annotations.idempotentHint).toBe(false);
     expect(byName.get('find_and_replace_in_scripts')?.annotations.idempotentHint).toBe(false);
     expect(byName.get('selection')?.annotations).toMatchObject({
       readOnlyHint: false,
@@ -436,7 +450,7 @@ describe('MCP v2 tool runtime', () => {
     const fullInstructions = serverInstructions(TOOL_DEFINITIONS);
     expect(fullInstructions).toContain('get_connected_instances');
     expect(fullInstructions).toContain('execute_luau');
-    expect(fullInstructions).toContain('set_script_source');
+    expect(fullInstructions).toContain('edit_script');
     expect(fullInstructions).toContain('solo_playtest');
     expect(fullInstructions).toContain('preview');
     expect(fullInstructions).toContain('robloxstudio://tool-guides');

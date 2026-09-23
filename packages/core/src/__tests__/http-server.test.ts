@@ -158,6 +158,23 @@ describe('HTTP Server', () => {
     });
   });
 
+  describe('direct tool validation', () => {
+    test('rejects arguments that violate the advertised tool schema', async () => {
+      const response = await request(app)
+        .post('/mcp/search_objects')
+        .send({ query: 42 })
+        .expect(400);
+
+      expect(response.body).toMatchObject({
+        error: 'invalid_arguments',
+        message: 'Invalid arguments for search_objects.',
+      });
+      expect(response.body.issues).toEqual(expect.arrayContaining([
+        expect.stringContaining('must be string'),
+      ]));
+    });
+  });
+
   describe('Tool Handlers', () => {
     test('get_script_source only accepts line_range for range selection', async () => {
       const getScriptSource = jest.fn(async () => ({ content: [] }));
@@ -185,7 +202,8 @@ describe('HTTP Server', () => {
       const deleteScriptLines = jest.fn(async () => ({ content: [] }));
       const fakeTools = { editScriptLines, deleteScriptLines } as unknown as RobloxStudioTools;
 
-      await TOOL_HANDLERS.edit_script_lines(fakeTools, {
+      await TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'replace',
         instancePath: 'game.ServerScriptService.Main',
         old_string: 'old',
         new_string: 'new',
@@ -194,14 +212,16 @@ describe('HTTP Server', () => {
       });
       expect(editScriptLines).toHaveBeenLastCalledWith('game.ServerScriptService.Main', 'old', 'new', 42, 'place:test');
 
-      await TOOL_HANDLERS.delete_script_lines(fakeTools, {
+      await TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'delete',
         instancePath: 'game.ServerScriptService.Main',
         line_range: '10-12',
         instance_id: 'place:test',
       });
       expect(deleteScriptLines).toHaveBeenLastCalledWith('game.ServerScriptService.Main', 10, 12, 'place:test');
 
-      await TOOL_HANDLERS.edit_script_lines(fakeTools, {
+      await TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'replace',
         instancePath: 'game.ServerScriptService.Main',
         old_string: 'old',
         new_string: 'new',
@@ -216,7 +236,8 @@ describe('HTTP Server', () => {
       const deleteScriptLines = jest.fn(async () => ({ content: [] }));
       const fakeTools = { editScriptLines, deleteScriptLines } as unknown as RobloxStudioTools;
 
-      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script_lines(fakeTools, {
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'replace',
         instancePath: 'game.ServerScriptService.Main',
         old_string: 'old',
         new_string: 'new',
@@ -224,25 +245,29 @@ describe('HTTP Server', () => {
       }))).rejects.toThrow(/single line/);
       expect(editScriptLines).not.toHaveBeenCalled();
 
-      await expect(Promise.resolve().then(() => TOOL_HANDLERS.delete_script_lines(fakeTools, {
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'delete',
         instancePath: 'game.ServerScriptService.Main',
         line_range: '10-',
       }))).rejects.toThrow(/requires line_range/);
       expect(deleteScriptLines).not.toHaveBeenCalled();
 
-      await expect(Promise.resolve().then(() => TOOL_HANDLERS.delete_script_lines(fakeTools, {
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'delete',
         instancePath: 'game.ServerScriptService.Main',
         line_range: '0',
       }))).rejects.toThrow(/line_range must/);
       expect(deleteScriptLines).not.toHaveBeenCalled();
 
-      await expect(Promise.resolve().then(() => TOOL_HANDLERS.delete_script_lines(fakeTools, {
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'delete',
         instancePath: 'game.ServerScriptService.Main',
         line_range: '12-10',
       }))).rejects.toThrow(/line_range must/);
       expect(deleteScriptLines).not.toHaveBeenCalled();
 
-      await expect(Promise.resolve().then(() => TOOL_HANDLERS.delete_script_lines(fakeTools, {
+      await expect(Promise.resolve().then(() => TOOL_HANDLERS.edit_script(fakeTools, {
+        action: 'delete',
         instancePath: 'game.ServerScriptService.Main',
         startLine: 10,
         endLine: 12,

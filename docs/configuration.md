@@ -46,6 +46,29 @@ Pass either a top-level row ID or one of these grouped runtime IDs as
 `instance_id`; the server resolves it to the correct game scope. Per-place port
 tabs such as `58742` are not the supported routing model.
 
+## Tool profiles
+
+`ServerConfig` accepts an optional backward-compatible `toolProfile`:
+
+- `full` (default): every tool in `TOOL_DEFINITIONS`.
+- `inspector`: read-only tools only (`getReadOnlyTools()`).
+- `minimal`: common read-only discovery tools
+  (`get_place_info`, `search_objects`, `get_instance_properties`,
+  `get_project_structure`, `get_script_source`, `get_attributes`,
+  `grep_scripts`, `get_connected_instances`, `get_request_status`,
+  `get_runtime_logs`, `get_roblox_docs`, `get_roblox_skills`).
+
+Profiles resolve through `resolveToolProfile()` / `getToolsForProfile()` /
+`resolveAllowedToolNamesForProfile()` exported from
+`@chrrxs/robloxstudio-mcp-core`. The server intersects the profile with the
+configured `tools` array using the existing `allowedTools` set, so omitting
+`toolProfile` keeps the default surface unchanged and no tool is renamed.
+
+Low-risk local tools (`get_roblox_skills`, `get_connected_instances`,
+`get_request_status`) return both legacy JSON-in-text and `structuredContent`
+via the `toStructuredResult()` helper. Modern MCP clients read
+`structuredContent` once; legacy clients keep the identical text payload.
+
 ## Version compatibility
 
 The Studio plugin and MCP server must have the same version. `/ready` rejects a
@@ -63,6 +86,7 @@ Studio to load the matching bundled plugin.
 | `ROBLOX_STUDIO_AUTH_TOKEN` | Auto-generated token file | Explicit shared secret that overrides the token file. |
 | `ROBLOX_STUDIO_NO_AUTH` | Unset | Set to `1` or `true` to disable HTTP tool authentication. This is not recommended. |
 | `ROBLOX_STUDIO_ALLOWED_ORIGINS` | None | Comma-separated browser origins allowed to call the HTTP API cross-origin. |
+| `ROBLOX_STUDIO_TIMINGS` | Unset | Set to `1` to log each Studio request's endpoint, duration, bytes, and outcome to stderr. |
 | `ROBLOX_OPEN_CLOUD_API_KEY` | None | Roblox Open Cloud key used by features such as audio preview and place version access. Required permissions depend on the tool. |
 | `MCP_PLUGINS_DIR` | Platform Studio Plugins folder | Override the destination used by plugin installation. |
 

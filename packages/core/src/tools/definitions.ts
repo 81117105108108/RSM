@@ -38,16 +38,26 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'Text, class, or property value to match.'
+          description: 'Case-insensitive literal text to match.'
         },
         searchType: {
           type: 'string',
           enum: ['name', 'class', 'property'],
-          description: 'Field to search; defaults to name.'
+          description: 'Defaults to name.'
         },
         propertyName: {
           type: 'string',
-          description: 'Property to search when searchType is property.'
+          description: 'Required when searchType is property.'
+        },
+        root: {
+          type: 'string',
+          description: 'Ancestor path; defaults to game.'
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 1000,
+          description: 'Defaults to 50.'
         },
         instance_id: {
           type: 'string',
@@ -165,107 +175,43 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     }
   },
   {
-    name: 'set_script_source',
+    name: 'edit_script',
     category: 'write',
-    description: 'Use only when replacing a script\'s entire source.',
+    description: 'Use to change one script: replace text, insert or delete lines, or set the whole source.',
     inputSchema: {
       type: 'object',
       properties: {
-        instancePath: {
+        action: {
           type: 'string',
-          description: 'Canonical path of the script.'
+          enum: ['replace', 'insert', 'delete', 'set'],
+          description: 'Use set only to replace the entire source.'
         },
-        source: {
-          type: 'string',
-          description: 'Complete replacement source.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      },
-      required: ['instancePath', 'source']
-    }
-  },
-  {
-    name: 'edit_script_lines',
-    category: 'write',
-    description: 'Use for an exact, localized replacement in one script.',
-    inputSchema: {
-      type: 'object',
-      properties: {
         instancePath: {
           type: 'string',
           description: 'Canonical path of the script.'
         },
         old_string: {
           type: 'string',
-          description: 'Exact text; must be unique unless line_range is set.'
+          description: 'replace: exact text; unique unless line_range is set.'
         },
         new_string: {
           type: 'string',
-          description: 'Replacement source text.'
+          description: 'replace/insert text, or the complete source for set.'
         },
         line_range: {
           type: 'string',
-          description: 'Start line; required when old_string is not unique.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      },
-      required: ['instancePath', 'old_string', 'new_string']
-    }
-  },
-  {
-    name: 'insert_script_lines',
-    category: 'write',
-    description: 'Use to add source after a known line in one script.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        instancePath: {
-          type: 'string',
-          description: 'Canonical path of the script.'
+          description: 'replace: start line "N". delete: inclusive "N-M" or "N".'
         },
         afterLine: {
           type: 'number',
-          description: 'Line to insert after; 0 means before line 1.'
-        },
-        newContent: {
-          type: 'string',
-          description: 'Source text to insert.'
+          description: 'insert: line to insert after; 0 means before line 1.'
         },
         instance_id: {
           type: 'string',
           description: 'Studio process ID when ambiguous.'
         }
       },
-      required: ['instancePath', 'newContent']
-    }
-  },
-  {
-    name: 'delete_script_lines',
-    category: 'write',
-    description: 'Use to remove a known inclusive line range from one script.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        instancePath: {
-          type: 'string',
-          description: 'Canonical path of the script.'
-        },
-        line_range: {
-          type: 'string',
-          description: 'Inclusive "N-M" or "N" range; open ends are invalid.'
-        },
-        instance_id: {
-          type: 'string',
-          description: 'Studio process ID when ambiguous.'
-        }
-      },
-      required: ['instancePath', 'line_range']
+      required: ['action', 'instancePath']
     }
   },
   {
@@ -1805,3 +1751,60 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
 
 export const getReadOnlyTools = () => TOOL_DEFINITIONS.filter(t => t.category === 'read');
 export const getAllTools = () => [...TOOL_DEFINITIONS];
+
+export type ToolProfile = 'full' | 'inspector' | 'minimal';
+
+export const DEFAULT_TOOL_PROFILE: ToolProfile = 'full';
+
+export const TOOL_PROFILE_NAMES: readonly ToolProfile[] = ['full', 'inspector', 'minimal'];
+
+/**
+ * Minimal profile: common read-only discovery tools. Subset of inspector/full.
+ * Ordered to match TOOL_DEFINITIONS order when resolved.
+ */
+export const MINIMAL_TOOL_NAMES: readonly string[] = [
+  'get_place_info',
+  'search_objects',
+  'get_instance_properties',
+  'get_project_structure',
+  'get_script_source',
+  'get_attributes',
+  'grep_scripts',
+  'get_connected_instances',
+  'get_request_status',
+  'get_runtime_logs',
+  'get_roblox_docs',
+  'get_roblox_skills',
+];
+
+export function isToolProfile(value: unknown): value is ToolProfile {
+  return value === 'full' || value === 'inspector' || value === 'minimal';
+}
+
+export function resolveToolProfile(profile?: unknown): ToolProfile {
+  if (profile === undefined) return DEFAULT_TOOL_PROFILE;
+  if (isToolProfile(profile)) return profile;
+  throw new Error(
+    `Unknown tool profile "${String(profile)}". Valid profiles: ${TOOL_PROFILE_NAMES.join(', ')}`,
+  );
+}
+
+export function getMinimalTools(): ToolDefinition[] {
+  const allowed = new Set(MINIMAL_TOOL_NAMES);
+  return TOOL_DEFINITIONS.filter((tool) => allowed.has(tool.name));
+}
+
+export function getToolsForProfile(profile?: ToolProfile | string): ToolDefinition[] {
+  const resolved = resolveToolProfile(profile);
+  if (resolved === 'inspector') return getReadOnlyTools();
+  if (resolved === 'minimal') return getMinimalTools();
+  return getAllTools();
+}
+
+/**
+ * Resolver backed by the existing allowedTools mechanism.
+ * Returns the allowed tool-name set for a profile. Full defaults to every tool.
+ */
+export function resolveAllowedToolNamesForProfile(profile?: ToolProfile | string): Set<string> {
+  return new Set(getToolsForProfile(profile).map((tool) => tool.name));
+}

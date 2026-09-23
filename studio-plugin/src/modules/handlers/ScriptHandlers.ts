@@ -8,14 +8,6 @@ const SOURCE_TRUNCATE_CHAR_BUDGET = 25000;
 const SOURCE_TRUNCATE_LINE_BUDGET = 400;
 const SOURCE_TRUNCATE_TO_LINES = 300;
 
-function getTopServiceName(instance: Instance): string {
-	let topServiceInst: Instance = instance;
-	while (topServiceInst.Parent && topServiceInst.Parent !== game) {
-		topServiceInst = topServiceInst.Parent;
-	}
-	return topServiceInst.Name;
-}
-
 function sliceLines(lines: string[], startLine: number, endLine: number): string[] {
 	const selectedLines: string[] = [];
 	for (let i = startLine; i <= endLine; i++) {
@@ -47,7 +39,7 @@ function getScriptSource(requestData: Record<string, unknown>) {
 
 	const [success, result] = pcall(() => {
 		const fullSource = readScriptSource(instance);
-		const [lines, hasTrailingNewline] = splitLines(fullSource);
+		const [lines] = splitLines(fullSource);
 		const totalLineCount = lines.size();
 		const explicitRange = startLine !== undefined || endLine !== undefined;
 		const shouldTruncate = !explicitRange &&
@@ -59,17 +51,11 @@ function getScriptSource(requestData: Record<string, unknown>) {
 		const selectedLines = (explicitRange || shouldTruncate)
 			? sliceLines(lines, returnedStartLine, returnedEndLine)
 			: lines;
-		const sourceToReturn = explicitRange
-			? joinLines(selectedLines, hasTrailingNewline && returnedEndLine === totalLineCount)
-			: shouldTruncate ? selectedLines.join("\n") : fullSource;
-
+		// The server returns only the numbered projection, so raw source is not sent twice.
 		const resp: Record<string, unknown> = {
 			instancePath,
 			className: instance.ClassName,
-			name: instance.Name,
-			source: sourceToReturn,
 			numberedSource: numberLines(selectedLines, returnedStartLine),
-			sourceLength: fullSource.size(),
 			lineCount: totalLineCount,
 			startLine: returnedStartLine,
 			endLine: returnedEndLine,
@@ -84,8 +70,6 @@ function getScriptSource(requestData: Record<string, unknown>) {
 		if (instance.IsA("BaseScript")) {
 			resp.enabled = instance.Enabled;
 		}
-
-		resp.topService = getTopServiceName(instance);
 
 		return resp;
 	});

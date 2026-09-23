@@ -5,99 +5,6 @@ import type { StudioRequestContext } from "../../types";
 
 const { getInstancePath, getInstanceByPath, readScriptSource } = Utils;
 
-interface TreeNode {
-	name: string;
-	className: string;
-	path?: string;
-	children: TreeNode[];
-	hasSource?: boolean;
-	scriptType?: string;
-	enabled?: boolean;
-}
-
-function getFileTree(requestData: Record<string, unknown>) {
-	const path = (requestData.path as string) ?? "";
-	const startInstance = getInstanceByPath(path);
-
-	if (!startInstance) {
-		return { error: `Path not found: ${path}` };
-	}
-
-	function buildTree(instance: Instance, depth: number): TreeNode {
-		if (depth > 10) {
-			return { name: instance.Name, className: instance.ClassName, children: [] };
-		}
-
-		const node: TreeNode = {
-			name: instance.Name,
-			className: instance.ClassName,
-			path: getInstancePath(instance),
-			children: [],
-		};
-
-		if (instance.IsA("LuaSourceContainer")) {
-			node.hasSource = true;
-			node.scriptType = instance.ClassName;
-			if (instance.IsA("BaseScript")) {
-				node.enabled = instance.Enabled;
-			}
-		}
-
-		for (const child of instance.GetChildren()) {
-			node.children.push(buildTree(child, depth + 1));
-		}
-
-		return node;
-	}
-
-	return {
-		tree: buildTree(startInstance, 0),
-		timestamp: tick(),
-	};
-}
-
-function searchFiles(requestData: Record<string, unknown>) {
-	const query = requestData.query as string;
-	const searchType = (requestData.searchType as string) ?? "name";
-
-	if (!query) return { error: "Query is required" };
-
-	const results: { name: string; className: string; path: string; hasSource: boolean; enabled?: boolean }[] = [];
-
-	function searchRecursive(instance: Instance) {
-		let match = false;
-
-		if (searchType === "name") {
-			match = instance.Name.lower().find(query.lower())[0] !== undefined;
-		} else if (searchType === "type") {
-			match = instance.ClassName.lower().find(query.lower())[0] !== undefined;
-		} else if (searchType === "content" && instance.IsA("LuaSourceContainer")) {
-			match = readScriptSource(instance).lower().find(query.lower())[0] !== undefined;
-		}
-
-		if (match) {
-			const entry: { name: string; className: string; path: string; hasSource: boolean; enabled?: boolean } = {
-				name: instance.Name,
-				className: instance.ClassName,
-				path: getInstancePath(instance),
-				hasSource: instance.IsA("LuaSourceContainer"),
-			};
-			if (instance.IsA("BaseScript")) {
-				entry.enabled = instance.Enabled;
-			}
-			results.push(entry);
-		}
-
-		for (const child of instance.GetChildren()) {
-			searchRecursive(child);
-		}
-	}
-
-	searchRecursive(game);
-
-	return { results, query, searchType, count: results.size() };
-}
-
 function getPlaceInfo(_requestData: Record<string, unknown>) {
 	const dataModelName = game.Name;
 	let placeName = dataModelName;
@@ -130,41 +37,40 @@ function searchObjects(requestData: Record<string, unknown>) {
 	const query = requestData.query as string;
 	const searchType = (requestData.searchType as string) ?? "name";
 	const propertyName = requestData.propertyName as string | undefined;
+	const rootPath = requestData.root as string | undefined;
+	const limit = math.clamp(math.floor((requestData.limit as number | undefined) ?? 50), 1, 1000);
 
 	if (!query) return { error: "Query is required" };
+	if (searchType === "property" && !propertyName) return { error: "propertyName is required when searchType is property" };
+
+	const root = rootPath !== undefined && rootPath !== "" ? getInstanceByPath(rootPath) : game;
+	if (!root) return { error: `Instance not found: ${rootPath}` };
+
+	// Plain (non-pattern) matching: queries like "a.b" or "(" are literal text.
+	const needle = query.lower();
+	const matches = (text: string) => text.lower().find(needle, 1, true)[0] !== undefined;
 
 	const results: { name: string; className: string; path: string }[] = [];
-
-	function searchRecursive(instance: Instance) {
+	let truncated = false;
+	for (const instance of root.GetDescendants()) {
 		let match = false;
-
 		if (searchType === "name") {
-			match = instance.Name.lower().find(query.lower())[0] !== undefined;
+			match = matches(instance.Name);
 		} else if (searchType === "class") {
-			match = instance.ClassName.lower().find(query.lower())[0] !== undefined;
-		} else if (searchType === "property" && propertyName) {
-			const [success, value] = pcall(() => tostring((instance as unknown as Record<string, unknown>)[propertyName]));
-			if (success) {
-				match = (value as string).lower().find(query.lower())[0] !== undefined;
-			}
+			match = matches(instance.ClassName);
+		} else if (searchType === "property") {
+			const [success, value] = pcall(() => tostring((instance as unknown as Record<string, unknown>)[propertyName!]));
+			match = success && matches(value as string);
 		}
-
-		if (match) {
-			results.push({
-				name: instance.Name,
-				className: instance.ClassName,
-				path: getInstancePath(instance),
-			});
+		if (!match) continue;
+		if (results.size() >= limit) {
+			truncated = true;
+			break;
 		}
-
-		for (const child of instance.GetChildren()) {
-			searchRecursive(child);
-		}
+		results.push({ name: instance.Name, className: instance.ClassName, path: getInstancePath(instance) });
 	}
 
-	searchRecursive(game);
-
-	return { results, query, searchType, count: results.size() };
+	return { results, count: results.size(), truncated };
 }
 
 function getInstanceProperties(requestData: Record<string, unknown>) {
@@ -278,92 +184,30 @@ function getInstanceProperties(requestData: Record<string, unknown>) {
 	}
 }
 
-function searchByProperty(requestData: Record<string, unknown>) {
-	const propertyName = requestData.propertyName as string;
-	const propertyValue = requestData.propertyValue as string;
+const STRUCTURE_PATH_KEYWORDS = new Set<string>([
+	"and", "break", "continue", "do", "else", "elseif", "end", "export",
+	"false", "for", "function", "if", "in", "local", "nil", "not", "or",
+	"repeat", "return", "then", "true", "type", "until", "while",
+]);
 
-	if (!propertyName || !propertyValue) {
-		return { error: "Property name and value are required" };
-	}
-
-	const results: { name: string; className: string; path: string; propertyValue: string }[] = [];
-
-	function searchRecursive(instance: Instance) {
-		const [success, value] = pcall(() => tostring((instance as unknown as Record<string, unknown>)[propertyName]));
-		if (success && (value as string).lower().find(propertyValue.lower())[0] !== undefined) {
-			results.push({
-				name: instance.Name,
-				className: instance.ClassName,
-				path: getInstancePath(instance),
-				propertyValue: value as string,
-			});
-		}
-		for (const child of instance.GetChildren()) {
-			searchRecursive(child);
-		}
-	}
-
-	searchRecursive(game);
-	return { propertyName, propertyValue, results, count: results.size() };
+function isStructurePathSegmentSimple(segment: string): boolean {
+	return segment.match("^[%a_][%w_]*$")[0] !== undefined && !STRUCTURE_PATH_KEYWORDS.has(segment);
 }
 
-function getClassInfo(requestData: Record<string, unknown>) {
-	const className = requestData.className as string;
-	if (!className) return { error: "Class name is required" };
+function quoteStructurePathSegment(segment: string): string {
+	let escaped = segment.gsub("\\", "\\\\")[0];
+	escaped = escaped.gsub("\n", "\\n")[0];
+	escaped = escaped.gsub("\r", "\\r")[0];
+	escaped = escaped.gsub("\t", "\\t")[0];
+	escaped = escaped.gsub('"', '\\"')[0];
+	return `"${escaped}"`;
+}
 
-	let [success, tempInstance] = pcall(() => new Instance(className as keyof CreatableInstances));
-	let isService = false;
-
-	if (!success) {
-		const [serviceSuccess, serviceInstance] = pcall(() =>
-			game.GetService(className as keyof Services),
-		);
-		if (serviceSuccess && serviceInstance) {
-			success = true;
-			tempInstance = serviceInstance as unknown as Instance;
-			isService = true;
-		}
+function joinStructureChildPath(parentPath: string, childName: string): string {
+	if (isStructurePathSegmentSimple(childName)) {
+		return `${parentPath}.${childName}`;
 	}
-
-	if (!success) return { error: `Invalid class name: ${className}` };
-
-	const classInfo: {
-		className: string;
-		isService: boolean;
-		properties: string[];
-		methods: string[];
-		events: string[];
-	} = { className, isService, properties: [], methods: [], events: [] };
-
-	const commonProps = [
-		"Name", "ClassName", "Parent", "Size", "Position", "Rotation", "CFrame",
-		"Anchored", "CanCollide", "Transparency", "BrickColor", "Material", "Color",
-		"Text", "TextColor3", "BackgroundColor3", "Image", "ImageColor3", "Visible",
-		"Active", "ZIndex", "BorderSizePixel", "BackgroundTransparency",
-		"ImageTransparency", "TextTransparency", "Value", "Enabled", "Brightness",
-		"Range", "Shadows",
-	];
-
-	for (const prop of commonProps) {
-		const [propSuccess] = pcall(() => (tempInstance as unknown as Record<string, unknown>)[prop]);
-		if (propSuccess) classInfo.properties.push(prop);
-	}
-
-	const commonMethods = [
-		"Destroy", "Clone", "FindFirstChild", "FindFirstChildOfClass",
-		"GetChildren", "IsA", "IsAncestorOf", "IsDescendantOf", "WaitForChild",
-	];
-
-	for (const method of commonMethods) {
-		const [methodSuccess] = pcall(() => (tempInstance as unknown as Record<string, unknown>)[method]);
-		if (methodSuccess) classInfo.methods.push(method);
-	}
-
-	if (!isService) {
-		(tempInstance as Instance).Destroy();
-	}
-
-	return classInfo;
+	return `${parentPath}[${quoteStructurePathSegment(childName)}]`;
 }
 
 function getProjectStructure(requestData: Record<string, unknown>) {
@@ -381,12 +225,15 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 		for (const serviceName of mainServices) {
 			const [svcOk, service] = pcall(() => game.GetService(serviceName as keyof Services));
 			if (svcOk && service) {
+				const svcInstance = service as Instance;
+				const svcChildren = svcInstance.GetChildren();
+				const childCount = svcChildren.size();
 				services.push({
 					name: service.Name,
 					className: service.ClassName,
-					path: getInstancePath(service as Instance),
-					childCount: (service as Instance).GetChildren().size(),
-					hasChildren: (service as Instance).GetChildren().size() > 0,
+					path: getInstancePath(svcInstance),
+					childCount,
+					hasChildren: childCount > 0,
 				});
 			}
 		}
@@ -402,13 +249,34 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 	const startInstance = getInstanceByPath(startPath);
 	if (!startInstance) return { error: `Path not found: ${startPath}` };
 
-	function getStructure(instance: Instance, depth: number): Record<string, unknown> {
+	// Cache canonical paths so each node's ancestry walk happens once.
+	// Child paths are derived from the cached parent path instead of
+	// walking to the DataModel root again.
+	const pathCache = new Map<Instance, string>();
+	const startInstancePath = getInstancePath(startInstance);
+	pathCache.set(startInstance, startInstancePath);
+
+	function cachedChildPath(parent: Instance, parentPath: string, child: Instance): string {
+		const hit = pathCache.get(child);
+		if (hit !== undefined) return hit;
+		let childPath: string;
+		if (parent === game) {
+			childPath = getInstancePath(child);
+		} else {
+			childPath = joinStructureChildPath(parentPath, child.Name);
+		}
+		pathCache.set(child, childPath);
+		return childPath;
+	}
+
+	function getStructure(instance: Instance, depth: number, instancePath: string): Record<string, unknown> {
+		const allChildren = instance.GetChildren();
 		if (depth > maxDepth) {
 			return {
 				name: instance.Name,
 				className: instance.ClassName,
-				path: getInstancePath(instance),
-				childCount: instance.GetChildren().size(),
+				path: instancePath,
+				childCount: allChildren.size(),
 				hasMore: true,
 				note: "Max depth reached - use this path to explore further",
 			};
@@ -417,7 +285,7 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 		const node: Record<string, unknown> = {
 			name: instance.Name,
 			className: instance.ClassName,
-			path: getInstancePath(instance),
+			path: instancePath,
 		};
 
 		if (instance.IsA("LuaSourceContainer")) {
@@ -441,11 +309,16 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 			}
 		}
 
-		let children = instance.GetChildren();
+		let children: Instance[];
 		if (showScriptsOnly) {
-			children = children.filter(
-				(child) => child.IsA("BaseScript") || child.IsA("Folder") || child.IsA("ModuleScript"),
-			);
+			children = [];
+			for (const child of allChildren) {
+				if (child.IsA("BaseScript") || child.IsA("Folder") || child.IsA("ModuleScript")) {
+					children.push(child);
+				}
+			}
+		} else {
+			children = allChildren;
 		}
 
 		const nodeChildren: Record<string, unknown>[] = [];
@@ -471,20 +344,21 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 			classGroups.forEach((classChildren, cn) => {
 				const limit = math.min(3, classChildren.size());
 				for (let i = 0; i < limit; i++) {
-					nodeChildren.push(getStructure(classChildren[i], depth + 1));
+					const child = classChildren[i];
+					nodeChildren.push(getStructure(child, depth + 1, cachedChildPath(instance, instancePath, child)));
 				}
 				if (classChildren.size() > 3) {
 					nodeChildren.push({
 						name: `... ${classChildren.size() - 3} more ${cn} objects`,
 						className: "MoreIndicator",
-						path: `${getInstancePath(instance)} [${cn} children]`,
+						path: `${instancePath} [${cn} children]`,
 						note: "Use specific path to explore these objects",
 					});
 				}
 			});
 		} else {
 			for (const child of children) {
-				nodeChildren.push(getStructure(child, depth + 1));
+				nodeChildren.push(getStructure(child, depth + 1, cachedChildPath(instance, instancePath, child)));
 			}
 		}
 		if (nodeChildren.size() > 0) {
@@ -494,7 +368,7 @@ function getProjectStructure(requestData: Record<string, unknown>) {
 		return node;
 	}
 
-	const result = getStructure(startInstance, 0);
+	const result = getStructure(startInstance, 0, startInstancePath);
 	result.requestedPath = startPath;
 	result.maxDepth = maxDepth;
 	result.scriptsOnly = showScriptsOnly;
@@ -561,13 +435,9 @@ function grepScripts(
 }
 
 export = {
-    getFileTree,
-    searchFiles,
     getPlaceInfo,
     searchObjects,
     getInstanceProperties,
-    searchByProperty,
-    getClassInfo,
     getProjectStructure,
     grepScripts,
 };

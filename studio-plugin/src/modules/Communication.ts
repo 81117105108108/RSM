@@ -42,13 +42,9 @@ type Handler = (data: Record<string, unknown>, context: StudioRequestContext) =>
 
 const routeMap: Record<string, Handler> = {
 
-    "/api/file-tree": QueryHandlers.getFileTree,
-    "/api/search-files": QueryHandlers.searchFiles,
     "/api/place-info": QueryHandlers.getPlaceInfo,
     "/api/search-objects": QueryHandlers.searchObjects,
     "/api/instance-properties": QueryHandlers.getInstanceProperties,
-    "/api/search-by-property": QueryHandlers.searchByProperty,
-    "/api/class-info": QueryHandlers.getClassInfo,
     "/api/project-structure": QueryHandlers.getProjectStructure,
     "/api/grep-scripts": QueryHandlers.grepScripts,
 

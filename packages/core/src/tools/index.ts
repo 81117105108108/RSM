@@ -4,7 +4,6 @@ import type { PublicStudioPeer } from '../bridge-service.js';
 import {
   OpenCloudClient,
   type AssetSearchParams,
-  type CreatorStoreSearchCategory,
 } from '../opencloud-client.js';
 import { RobloxCookieClient } from '../roblox-cookie-client.js';
 import {
@@ -24,6 +23,10 @@ import { rgbaToJpeg } from '../jpeg-encoder.js';
 import { rgbaToPng } from '../png-encoder.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { sleep, errorMessage, asRecord, asRows, numberField, stringField } from './util.js';
+import { CREATOR_STORE_SORT_CATEGORIES, normalizeCreatorStoreSearch, normalizeSearchAssetDescription, robloxAssetIdFromContentId, compactPreviewHierarchy, compactSoundReference } from './asset-helpers.js';
+import { loadMicroProfilerBaseline, compareMicroProfilerCaptures } from './micro-profiler-compare.js';
+import { type DeviceSimulatorSettings, type DeviceSimulatorMatrixEntry, type SimulationInclude, SIMULATION_PERSISTENCE_NOTES, normalizeNetworkProfile, buildNetworkProfileLuau, buildNetworkStateLuau, normalizeDeviceSimulatorSettings, hasDeviceSimulatorSettings, buildDeviceSimulatorLuau } from './simulation-luau.js';
 
 type RawImageCaptureResponse = {
   success?: boolean;
@@ -61,20 +64,6 @@ type EncodedViewportCapture = {
   error: string;
 };
 
-type DeviceSimulatorSettings = {
-  deviceId?: string;
-  orientation?: string;
-  resolution?: { width: number; height: number };
-  pixelDensity?: number;
-  scalingMode?: string;
-};
-
-type DeviceSimulatorMatrixEntry = DeviceSimulatorSettings & {
-  label?: string;
-};
-
-type SimulationInclude = 'network' | 'deviceSimulator' | 'both';
-
 type GenerateModelImage =
   { kind: 'asset'; asset_id: number };
 
@@ -96,6 +85,23 @@ type StudioToolResponse = Record<string, unknown> & {
   };
 };
 
+export type StructuredToolResult = {
+  content: [{ type: 'text'; text: string }];
+  structuredContent: Record<string, unknown>;
+};
+
+/**
+ * Structured-result helper. Keeps the legacy JSON-in-text payload byte-identical
+ * while also exposing the same object as structuredContent for modern MCP clients.
+ * normalizeToolResult in mcp-runtime treats both shapes equivalently.
+ */
+export function toStructuredResult(body: Record<string, unknown>): StructuredToolResult {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(body) }],
+    structuredContent: { ...body },
+  };
+}
+
 const MAX_INLINE_IMAGE_BYTES = 6_000_000;
 const MAX_MATRIX_IMAGE_BYTES = 8_000_000;
 const DEFAULT_ASSET_AUDIO_PREVIEWS = 3;
@@ -103,84 +109,12 @@ const MAX_ASSET_AUDIO_PREVIEWS = 5;
 const MAX_INLINE_AUDIO_PREVIEW_BYTES = 3_000_000;
 const MAX_INLINE_AUDIO_PREVIEW_TOTAL_BYTES = 6_000_000;
 const DEFAULT_ASSET_PREVIEW_DEPTH = 4;
-const MAX_ASSET_PREVIEW_HIERARCHY_NODES = 100;
-const MAX_SEARCH_ASSET_DESCRIPTION_LENGTH = 240;
 const ROBLOX_CREATOR_USER_ID = 1;
 const MAX_DEVICE_MATRIX_ENTRIES = 6;
-const MAX_NETWORK_PACKET_LOSS_PERCENT = 0.5;
 const GREP_SCRIPTS_TIMEOUT_MS = 120_000;
 const MAX_GREP_PATTERN_UTF8_BYTES = 4096;
 const RUNTIME_LOG_PEER_TIMEOUT_MS = 5_000;
 const STUDIO_ASSISTANT_SOURCE_IMAGE_LABEL = 'Studio Assistant Source Image';
-const CREATOR_STORE_SEARCH_TYPES = new Set<string>([
-  'Audio',
-  'Model',
-  'Decal',
-  'Plugin',
-  'MeshPart',
-  'Video',
-  'FontFamily',
-  'Image',
-  'Particle',
-  'VFX',
-]);
-const CREATOR_STORE_SORT_CATEGORIES = new Set<string>([
-  'Relevance',
-  'Trending',
-  'Top',
-  'AudioDuration',
-  'CreateTime',
-  'UpdatedTime',
-  'Ratings',
-]);
-function normalizeCreatorStoreSearch(
-  assetType: string,
-  query?: string,
-): {
-  requestedAssetType: string;
-  searchCategoryType: CreatorStoreSearchCategory;
-  effectiveQuery?: string;
-} {
-  if (!CREATOR_STORE_SEARCH_TYPES.has(assetType)) {
-    throw new Error(
-      `search_assets assetType must be one of: ${Array.from(CREATOR_STORE_SEARCH_TYPES).join(', ')}`,
-    );
-  }
-
-  const trimmedQuery = query?.trim() || undefined;
-  if (assetType === 'Image') {
-    return {
-      requestedAssetType: assetType,
-      searchCategoryType: 'Decal',
-      effectiveQuery: trimmedQuery,
-    };
-  }
-
-  if (assetType === 'Particle' || assetType === 'VFX') {
-    const suffix = assetType === 'Particle' ? 'particle effect' : 'VFX';
-    const alreadyEffectSpecific = trimmedQuery !== undefined && /\b(?:particle|vfx|effect)\b/i.test(trimmedQuery);
-    return {
-      requestedAssetType: assetType,
-      searchCategoryType: 'Model',
-      effectiveQuery: trimmedQuery
-        ? alreadyEffectSpecific ? trimmedQuery : `${trimmedQuery} ${suffix}`
-        : suffix,
-    };
-  }
-
-  return {
-    requestedAssetType: assetType,
-    searchCategoryType: assetType as CreatorStoreSearchCategory,
-    effectiveQuery: trimmedQuery,
-  };
-}
-
-function normalizeSearchAssetDescription(description: string | undefined): string {
-  const normalized = description?.replace(/\s+/g, ' ').trim() ?? '';
-  if (normalized.length <= MAX_SEARCH_ASSET_DESCRIPTION_LENGTH) return normalized;
-  return `${normalized.slice(0, MAX_SEARCH_ASSET_DESCRIPTION_LENGTH - 1).trimEnd()}…`;
-}
-
 // Encodes the raw RGBA capture into the requested image format.
 // - 'png': lossless — sharpest text/UI, but a busy 3D scene can be large.
 // - 'jpeg': default; quality 92 with 4:4:4 chroma (no subsampling) keeps text
@@ -202,768 +136,6 @@ function encodeImageFromRgbaResponse(
     buffer: rgbaToJpeg(rgbaBuffer, response.width, response.height, quality),
     mimeType: 'image/jpeg',
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function asRows(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value)
-    ? value.map(asRecord).filter((row): row is Record<string, unknown> => row !== undefined)
-    : [];
-}
-
-function numberField(row: Record<string, unknown> | undefined, key: string): number {
-  const value = row?.[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
-function optionalNumberField(
-  row: Record<string, unknown> | undefined,
-  key: string,
-): number | undefined {
-  const value = row?.[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function stringField(row: Record<string, unknown> | undefined, key: string): string {
-  const value = row?.[key];
-  return typeof value === 'string' && value !== '' ? value : '';
-}
-
-function robloxAssetIdFromContentId(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) {
-    return value;
-  }
-  if (typeof value !== 'string') return undefined;
-
-  const trimmed = value.trim();
-  const direct = /^(?:rbxassetid:\/\/)?(\d+)$/.exec(trimmed);
-  const query = /[?&]id=(\d+)(?:&|$)/i.exec(trimmed);
-  const rawId = direct?.[1] ?? query?.[1];
-  if (!rawId) return undefined;
-
-  const parsed = Number(rawId);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function compactPreviewHierarchy(value: unknown): {
-  hierarchy: Record<string, unknown>[];
-  truncated: boolean;
-} {
-  let remaining = MAX_ASSET_PREVIEW_HIERARCHY_NODES;
-  let truncated = false;
-
-  const compactNode = (row: Record<string, unknown>): Record<string, unknown> | undefined => {
-    if (remaining <= 0) {
-      truncated = true;
-      return undefined;
-    }
-    remaining--;
-
-    const node: Record<string, unknown> = {
-      name: stringField(row, 'name'),
-      className: stringField(row, 'className'),
-    };
-    const properties = asRecord(row.properties);
-    if (properties && Object.keys(properties).length > 0) {
-      node.properties = properties;
-    }
-
-    const children = asRows(row.children);
-    if (children.length > 0) {
-      const compactedChildren: Record<string, unknown>[] = [];
-      for (const child of children) {
-        const compacted = compactNode(child);
-        if (!compacted) break;
-        compactedChildren.push(compacted);
-      }
-      if (compactedChildren.length > 0) {
-        node.children = compactedChildren;
-      }
-      if (compactedChildren.length < children.length) {
-        node.childCount = children.length;
-        node.truncated = true;
-        truncated = true;
-      }
-    } else if (row.truncated === true) {
-      node.truncated = true;
-      const childCount = numberField(row, 'childCount');
-      if (childCount > 0) node.childCount = childCount;
-    }
-    return node;
-  };
-
-  const hierarchy: Record<string, unknown>[] = [];
-  for (const root of asRows(value)) {
-    const compacted = compactNode(root);
-    if (!compacted) break;
-    hierarchy.push(compacted);
-  }
-  return { hierarchy, truncated };
-}
-
-function compactSoundReference(sound: Record<string, unknown>): Record<string, unknown> {
-  const compact: Record<string, unknown> = {
-    name: stringField(sound, 'name'),
-    className: stringField(sound, 'className'),
-  };
-  const path = stringField(sound, 'path');
-  if (path) compact.path = path;
-  const assetId = robloxAssetIdFromContentId(
-    sound.assetId ?? sound.soundId ?? sound.asset,
-  );
-  if (assetId !== undefined) compact.assetId = assetId;
-
-  const volume = optionalNumberField(sound, 'volume');
-  if (volume !== undefined && volume !== 1) compact.volume = volume;
-  const playbackSpeed = optionalNumberField(sound, 'playbackSpeed');
-  if (playbackSpeed !== undefined && playbackSpeed !== 1) {
-    compact.playbackSpeed = playbackSpeed;
-  }
-  const timeLength = optionalNumberField(sound, 'timeLength');
-  if (timeLength !== undefined && timeLength > 0) compact.duration = timeLength;
-  if (sound.looped === true) compact.looped = true;
-  if (sound.autoPlay === true) compact.autoPlay = true;
-  return compact;
-}
-
-function microProfilerDurationMs(body: Record<string, unknown> | undefined): number {
-  const analysisWindow = asRecord(body?.analysis_window);
-  const analysisDurationUs = analysisWindow?.analysis_duration_us;
-  if (typeof analysisDurationUs === 'number' && Number.isFinite(analysisDurationUs) && analysisDurationUs > 0) {
-    return analysisDurationUs / 1000;
-  }
-  const duration = body?.duration_ms;
-  return typeof duration === 'number' && Number.isFinite(duration) && duration > 0 ? duration : 1000;
-}
-
-function perSecond(totalUs: number, durationMs: number): number {
-  return durationMs > 0 ? totalUs / (durationMs / 1000) : totalUs;
-}
-
-function roundNumber(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-function percentDelta(current: number, baseline: number): number | undefined {
-  if (baseline === 0) return current === 0 ? 0 : undefined;
-  return roundNumber(((current - baseline) / baseline) * 100);
-}
-
-function inclusiveUsField(row: Record<string, unknown> | undefined): number {
-  const inclusive = numberField(row, 'inclusive_us');
-  return inclusive !== 0 ? inclusive : numberField(row, 'total_us');
-}
-
-function rowSet(body: Record<string, unknown>, key: 'groups' | 'timers' | 'threads' | 'call_edges', fallback: string): Record<string, unknown>[] {
-  const comparisonIndex = asRecord(body.comparison_index);
-  const indexed = asRows(comparisonIndex?.[key]);
-  return indexed.length > 0 ? indexed : asRows(body[fallback]);
-}
-
-function nestedRecord(row: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
-  return asRecord(row?.[key]);
-}
-
-function loadMicroProfilerBaseline(source: unknown, sourcePath: unknown): Record<string, unknown> | undefined {
-  if (source !== undefined) {
-    const inline = asRecord(source);
-    if (!inline) throw new Error('baseline must be an object when provided');
-    return inline;
-  }
-  if (sourcePath !== undefined) {
-    if (typeof sourcePath !== 'string' || sourcePath === '') {
-      throw new Error('baseline_path must be a non-empty string when provided');
-    }
-    const resolved = path.resolve(sourcePath);
-    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8')) as unknown;
-    const record = asRecord(parsed);
-    if (!record) throw new Error(`baseline_path did not contain a JSON object: ${resolved}`);
-    return record;
-  }
-  return undefined;
-}
-
-function compareMicroProfilerRows(
-  currentRows: Record<string, unknown>[],
-  baselineRows: Record<string, unknown>[],
-  currentDurationMs: number,
-  baselineDurationMs: number,
-  keyForRow: (row: Record<string, unknown>) => string,
-  labelForRow: (row: Record<string, unknown>, fallbackKey: string) => Record<string, unknown>,
-  maxRows: number,
-): Record<string, unknown>[] {
-  const currentByKey = new Map<string, Record<string, unknown>>();
-  const baselineByKey = new Map<string, Record<string, unknown>>();
-  for (const row of currentRows) {
-    const key = keyForRow(row);
-    if (key) currentByKey.set(key, row);
-  }
-  for (const row of baselineRows) {
-    const key = keyForRow(row);
-    if (key) baselineByKey.set(key, row);
-  }
-
-  const usesFullIndex = currentRows.length > 0 && baselineRows.length > 0;
-  const keys = new Set<string>([...currentByKey.keys(), ...baselineByKey.keys()]);
-  const deltas: Record<string, unknown>[] = [];
-  for (const key of keys) {
-    const current = currentByKey.get(key);
-    const baseline = baselineByKey.get(key);
-    const currentInclusiveUs = inclusiveUsField(current);
-    const baselineInclusiveUs = inclusiveUsField(baseline);
-    const currentExclusiveUs = numberField(current, 'exclusive_us');
-    const baselineExclusiveUs = numberField(baseline, 'exclusive_us');
-    const currentCount = numberField(current, 'count');
-    const baselineCount = numberField(baseline, 'count');
-    const currentUsPerS = perSecond(currentInclusiveUs, currentDurationMs);
-    const baselineUsPerS = perSecond(baselineInclusiveUs, baselineDurationMs);
-    const currentExclusiveUsPerS = perSecond(currentExclusiveUs, currentDurationMs);
-    const baselineExclusiveUsPerS = perSecond(baselineExclusiveUs, baselineDurationMs);
-    const currentCountPerS = perSecond(currentCount, currentDurationMs);
-    const baselineCountPerS = perSecond(baselineCount, baselineDurationMs);
-    const row: Record<string, unknown> = {
-      ...labelForRow(current ?? baseline!, key),
-      matched_by: 'stable_label',
-      match_confidence: 'medium',
-      current_inclusive_us: currentInclusiveUs,
-      baseline_inclusive_us: baselineInclusiveUs,
-      delta_inclusive_us: currentInclusiveUs - baselineInclusiveUs,
-      current_inclusive_us_per_s: roundNumber(currentUsPerS),
-      baseline_inclusive_us_per_s: roundNumber(baselineUsPerS),
-      delta_inclusive_us_per_s: roundNumber(currentUsPerS - baselineUsPerS),
-      current_exclusive_us: currentExclusiveUs,
-      baseline_exclusive_us: baselineExclusiveUs,
-      delta_exclusive_us: currentExclusiveUs - baselineExclusiveUs,
-      current_exclusive_us_per_s: roundNumber(currentExclusiveUsPerS),
-      baseline_exclusive_us_per_s: roundNumber(baselineExclusiveUsPerS),
-      delta_exclusive_us_per_s: roundNumber(currentExclusiveUsPerS - baselineExclusiveUsPerS),
-      current_count: currentCount,
-      baseline_count: baselineCount,
-      delta_count: currentCount - baselineCount,
-      current_count_per_s: roundNumber(currentCountPerS),
-      baseline_count_per_s: roundNumber(baselineCountPerS),
-      delta_count_per_s: roundNumber(currentCountPerS - baselineCountPerS),
-    };
-    if (!usesFullIndex) row.match_scope = 'returned_rows';
-    const pct = percentDelta(currentUsPerS, baselineUsPerS);
-    if (pct !== undefined) row.delta_pct = pct;
-    deltas.push(row);
-  }
-
-  deltas.sort((a, b) => Math.abs(numberField(b, 'delta_inclusive_us_per_s')) - Math.abs(numberField(a, 'delta_inclusive_us_per_s')));
-  return deltas.slice(0, maxRows);
-}
-
-function compareMicroProfilerCaptures(
-  current: Record<string, unknown>,
-  baseline: Record<string, unknown>,
-  options: { currentLabel?: string; baselineLabel?: string; maxRows?: number } = {},
-): Record<string, unknown> {
-  const currentDurationMs = microProfilerDurationMs(current);
-  const baselineDurationMs = microProfilerDurationMs(baseline);
-  const maxRows = Math.max(1, Math.min(100, Math.trunc(options.maxRows ?? 20)));
-
-  const groupDeltas = compareMicroProfilerRows(
-    rowSet(current, 'groups', 'top_groups'),
-    rowSet(baseline, 'groups', 'top_groups'),
-    currentDurationMs,
-    baselineDurationMs,
-    (row) => stringField(row, 'group'),
-    (row, key) => ({ group: stringField(row, 'group') || key }),
-    maxRows,
-  );
-
-  const timerDeltas = compareMicroProfilerRows(
-    rowSet(current, 'timers', 'top_timers'),
-    rowSet(baseline, 'timers', 'top_timers'),
-    currentDurationMs,
-    baselineDurationMs,
-    (row) => `${stringField(row, 'group')}::${stringField(row, 'name') || stringField(row, 'timer_id')}`,
-    (row, key) => ({
-      group: stringField(row, 'group') || key.split('::')[0],
-      name: stringField(row, 'name') || key.split('::')[1],
-      timer_id: row.timer_id,
-    }),
-    maxRows,
-  );
-
-  const threadDeltas = compareMicroProfilerRows(
-    rowSet(current, 'threads', 'top_threads'),
-    rowSet(baseline, 'threads', 'top_threads'),
-    currentDurationMs,
-    baselineDurationMs,
-    (row) => stringField(row, 'thread_name') || String(numberField(row, 'thread_id')),
-    (row, key) => ({
-      thread_id: row.thread_id,
-      thread_name: stringField(row, 'thread_name') || key,
-      is_gpu: row.is_gpu,
-    }),
-    maxRows,
-  );
-
-  const edgeDeltas = compareMicroProfilerRows(
-    rowSet(current, 'call_edges', 'top_call_edges'),
-    rowSet(baseline, 'call_edges', 'top_call_edges'),
-    currentDurationMs,
-    baselineDurationMs,
-    (row) => {
-      const parent = nestedRecord(row, 'parent');
-      const child = nestedRecord(row, 'child');
-      return [
-        stringField(parent, 'group'),
-        stringField(parent, 'name') || stringField(parent, 'timer_id'),
-        '>',
-        stringField(child, 'group'),
-        stringField(child, 'name') || stringField(child, 'timer_id'),
-      ].join('::');
-    },
-    (row, key) => ({
-      parent: nestedRecord(row, 'parent') ?? { label: key },
-      child: nestedRecord(row, 'child') ?? { label: key },
-    }),
-    maxRows,
-  );
-
-  const currentHasIndex = asRecord(current.comparison_index) !== undefined;
-  const baselineHasIndex = asRecord(baseline.comparison_index) !== undefined;
-  return {
-    baseline_label: options.baselineLabel ?? 'baseline',
-    current_label: options.currentLabel ?? 'current',
-    basis: 'inclusive_us_per_second normalized by each capture analysis duration; deltas use current minus baseline.',
-    coverage: {
-      current: currentHasIndex ? 'comparison_index' : 'returned_rows',
-      baseline: baselineHasIndex ? 'comparison_index' : 'returned_rows',
-    },
-    duration_ms: {
-      baseline: baselineDurationMs,
-      current: currentDurationMs,
-    },
-    groups: groupDeltas,
-    timers: timerDeltas,
-    threads: threadDeltas,
-    call_edges: edgeDeltas,
-  };
-}
-
-const NETWORK_PROFILE_KEYS = [
-  'InboundNetworkMinDelayMs',
-  'OutboundNetworkMinDelayMs',
-  'InboundNetworkJitterMs',
-  'OutboundNetworkJitterMs',
-  'InboundNetworkLossPercent',
-  'OutboundNetworkLossPercent',
-] as const;
-
-type NetworkProfileKey = typeof NETWORK_PROFILE_KEYS[number];
-type NetworkProfileValues = Partial<Record<NetworkProfileKey, number>>;
-
-const NETWORK_PROFILES: Record<'great' | 'good' | 'poor', Record<NetworkProfileKey, number>> = {
-  great: {
-    InboundNetworkMinDelayMs: 15,
-    OutboundNetworkMinDelayMs: 15,
-    InboundNetworkJitterMs: 0,
-    OutboundNetworkJitterMs: 0,
-    InboundNetworkLossPercent: 0,
-    OutboundNetworkLossPercent: 0,
-  },
-  good: {
-    InboundNetworkMinDelayMs: 50,
-    OutboundNetworkMinDelayMs: 50,
-    InboundNetworkJitterMs: 10,
-    OutboundNetworkJitterMs: 10,
-    InboundNetworkLossPercent: 0,
-    OutboundNetworkLossPercent: 0,
-  },
-  poor: {
-    InboundNetworkMinDelayMs: 150,
-    OutboundNetworkMinDelayMs: 150,
-    InboundNetworkJitterMs: 100,
-    OutboundNetworkJitterMs: 100,
-    InboundNetworkLossPercent: 0.5,
-    OutboundNetworkLossPercent: 0.5,
-  },
-};
-
-const ZERO_NETWORK_PROFILE: Record<NetworkProfileKey, number> = {
-  InboundNetworkMinDelayMs: 0,
-  OutboundNetworkMinDelayMs: 0,
-  InboundNetworkJitterMs: 0,
-  OutboundNetworkJitterMs: 0,
-  InboundNetworkLossPercent: 0,
-  OutboundNetworkLossPercent: 0,
-};
-
-const SIMULATION_PERSISTENCE_NOTES = [
-  'Normal Play client changes can write back to edit state.',
-  'Multiplayer clients inherit baseline at startup but are isolated afterward.',
-  'StudioTestService client device simulator state may appear stale on fresh clients, so reset after client startup is required.',
-];
-
-function normalizeNetworkProfile(profile: string, overrides?: Record<string, unknown>): NetworkProfileValues {
-  if (!['great', 'good', 'poor', 'custom'].includes(profile)) {
-    throw new Error('profile must be "great", "good", "poor", or "custom"');
-  }
-
-  const values: NetworkProfileValues = profile === 'custom'
-    ? {}
-    : { ...NETWORK_PROFILES[profile as 'great' | 'good' | 'poor'] };
-
-  if (overrides !== undefined) {
-    if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) {
-      throw new Error('overrides must be an object when provided');
-    }
-    const allowed = new Set<string>(NETWORK_PROFILE_KEYS);
-    for (const [key, value] of Object.entries(overrides)) {
-      if (!allowed.has(key)) {
-        throw new Error(`Unsupported network override "${key}". Allowed: ${NETWORK_PROFILE_KEYS.join(', ')}`);
-      }
-      if (typeof value !== 'number' || !Number.isFinite(value)) {
-        throw new Error(`Network override "${key}" must be a finite number`);
-      }
-      if (value < 0) {
-        throw new Error(`Network override "${key}" must be greater than or equal to 0`);
-      }
-      if ((key === 'InboundNetworkLossPercent' || key === 'OutboundNetworkLossPercent') && value > MAX_NETWORK_PACKET_LOSS_PERCENT) {
-        throw new Error(`Network override "${key}" cannot exceed ${MAX_NETWORK_PACKET_LOSS_PERCENT}; Roblox engine limits packet loss simulation to 0.5%.`);
-      }
-      values[key as NetworkProfileKey] = value;
-    }
-  }
-
-  if (Object.keys(values).length === 0) {
-    throw new Error('custom profile requires at least one override');
-  }
-
-  return values;
-}
-
-function buildNetworkProfileLuau(profile: string, values: NetworkProfileValues): string {
-  const valuesJson = JSON.stringify(values);
-  const keysJson = JSON.stringify(NETWORK_PROFILE_KEYS);
-  return `
-local HttpService = game:GetService("HttpService")
-local ns = settings():GetService("NetworkSettings")
-local keys = HttpService:JSONDecode(${JSON.stringify(keysJson)})
-local desired = HttpService:JSONDecode(${JSON.stringify(valuesJson)})
-local before = {}
-for _, key in ipairs(keys) do
-\tbefore[key] = ns[key]
-end
-for key, value in pairs(desired) do
-\tns[key] = value
-end
-local after = {}
-for _, key in ipairs(keys) do
-\tafter[key] = ns[key]
-end
-return HttpService:JSONEncode({
-\tprofile = ${JSON.stringify(profile)},
-\tapplied = desired,
-\tbefore = before,
-\tafter = after,
-})
-`.trim();
-}
-
-function buildNetworkStateLuau(operation: 'get' | 'reset'): string {
-  const keysJson = JSON.stringify(NETWORK_PROFILE_KEYS);
-  const resetJson = JSON.stringify(ZERO_NETWORK_PROFILE);
-  return `
-local HttpService = game:GetService("HttpService")
-local ns = settings():GetService("NetworkSettings")
-local operation = ${JSON.stringify(operation)}
-local keys = HttpService:JSONDecode(${JSON.stringify(keysJson)})
-local resetValues = HttpService:JSONDecode(${JSON.stringify(resetJson)})
-
-local function readState()
-\tlocal state = {}
-\tfor _, key in ipairs(keys) do
-\t\tstate[key] = ns[key]
-\tend
-\treturn state
-end
-
-if operation == "get" then
-\treturn HttpService:JSONEncode({
-\t\tsuccess = true,
-\t\tstate = readState(),
-\t})
-end
-
-if operation == "reset" then
-\tlocal before = readState()
-\tfor key, value in pairs(resetValues) do
-\t\tns[key] = value
-\tend
-\treturn HttpService:JSONEncode({
-\t\tsuccess = true,
-\t\tapplied = resetValues,
-\t\tbefore = before,
-\t\tafter = readState(),
-\t})
-end
-
-error("Unsupported network simulation operation: " .. tostring(operation), 0)
-`.trim();
-}
-
-function normalizeDeviceSimulatorResolution(value: unknown): { width: number; height: number } | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('resolution must be an object with positive integer width and height');
-  }
-  const resolution = value as { width?: unknown; height?: unknown };
-  const width = resolution.width;
-  const height = resolution.height;
-  if (!Number.isInteger(width) || !Number.isInteger(height) || (width as number) <= 0 || (height as number) <= 0) {
-    throw new Error('resolution.width and resolution.height must be positive integers');
-  }
-  return { width: width as number, height: height as number };
-}
-
-function normalizeDeviceSimulatorSettings(input: {
-  deviceId?: unknown;
-  orientation?: unknown;
-  resolution?: unknown;
-  pixelDensity?: unknown;
-  scalingMode?: unknown;
-}): DeviceSimulatorSettings {
-  const settings: DeviceSimulatorSettings = {};
-
-  if (input.deviceId !== undefined) {
-    if (typeof input.deviceId !== 'string' || input.deviceId.trim() === '') {
-      throw new Error('deviceId must be a non-empty string');
-    }
-    settings.deviceId = input.deviceId;
-  }
-
-  if (input.orientation !== undefined) {
-    if (typeof input.orientation !== 'string' || input.orientation.trim() === '') {
-      throw new Error('orientation must be a non-empty string');
-    }
-    settings.orientation = input.orientation;
-  }
-
-  const resolution = normalizeDeviceSimulatorResolution(input.resolution);
-  if (resolution !== undefined) settings.resolution = resolution;
-
-  if (input.pixelDensity !== undefined) {
-    if (typeof input.pixelDensity !== 'number' || !Number.isFinite(input.pixelDensity) || input.pixelDensity <= 0) {
-      throw new Error('pixelDensity must be a positive finite number');
-    }
-    settings.pixelDensity = input.pixelDensity;
-  }
-
-  if (input.scalingMode !== undefined) {
-    if (typeof input.scalingMode !== 'string' || input.scalingMode.trim() === '') {
-      throw new Error('scalingMode must be a non-empty string');
-    }
-    settings.scalingMode = input.scalingMode;
-  }
-
-  return settings;
-}
-
-function hasDeviceSimulatorSettings(settings: DeviceSimulatorSettings): boolean {
-  return settings.deviceId !== undefined ||
-    settings.orientation !== undefined ||
-    settings.resolution !== undefined ||
-    settings.pixelDensity !== undefined ||
-    settings.scalingMode !== undefined;
-}
-
-function buildDeviceSimulatorLuau(operation: 'get' | 'set', options: Record<string, unknown>): string {
-  const payload = JSON.stringify({ operation, ...options });
-  return `
-local HttpService = game:GetService("HttpService")
-local simulator = game:GetService("StudioDeviceSimulatorService")
-local opts = HttpService:JSONDecode(${JSON.stringify(payload)})
-
-local function plain(value)
-\tlocal valueType = typeof(value)
-\tif valueType == "Vector2" then
-\t\treturn { x = value.X, y = value.Y, width = value.X, height = value.Y }
-\tend
-\tif valueType == "EnumItem" then
-\t\treturn value.Name
-\tend
-\tif type(value) == "table" then
-\t\tlocal out = {}
-\t\tfor k, v in pairs(value) do
-\t\t\tout[tostring(k)] = plain(v)
-\t\tend
-\t\treturn out
-\tend
-\treturn value
-end
-
-local function getDeviceInfo(deviceId)
-\tlocal ok, info = pcall(function()
-\t\treturn simulator:GetDeviceInfoAsync(deviceId)
-\tend)
-\tif ok then
-\t\treturn plain(info), nil
-\tend
-\treturn nil, tostring(info)
-end
-
-local function normalizeDeviceList(rawList)
-\tlocal devices = {}
-\tlocal ids = {}
-\tfor _, entry in ipairs(rawList) do
-\t\tlocal item
-\t\tlocal id
-\t\tif type(entry) == "table" then
-\t\t\titem = plain(entry)
-\t\t\tid = item.DeviceId or item.deviceId or item.Id or item.id or item[1]
-\t\telse
-\t\t\tid = tostring(entry)
-\t\t\titem = { DeviceId = id }
-\t\tend
-\t\tif id ~= nil then
-\t\t\tid = tostring(id)
-\t\t\tlocal info = getDeviceInfo(id)
-\t\t\tif type(info) == "table" then
-\t\t\t\titem = info
-\t\t\t\tif item.DeviceId == nil then item.DeviceId = id end
-\t\t\tend
-\t\t\tif item.IsCustom ~= true then
-\t\t\t\tids[id] = true
-\t\t\t\ttable.insert(devices, item)
-\t\t\tend
-\t\tend
-\tend
-\treturn devices, ids
-end
-
-local function getDeviceList()
-\tlocal rawList = simulator:GetDeviceListAsync()
-\treturn normalizeDeviceList(rawList)
-end
-
-local function assertBuiltInDeviceExists(deviceId)
-\tlocal _, ids = getDeviceList()
-\tif ids[deviceId] then return end
-\tlocal available = {}
-\tfor id in pairs(ids) do table.insert(available, id) end
-\ttable.sort(available)
-\terror('deviceId "' .. tostring(deviceId) .. '" is not an available built-in device. Use get_device_simulator_state to list supported device IDs. Available: ' .. table.concat(available, ", "), 0)
-end
-
-local function enumByName(enumType, raw, label)
-\tlocal name = tostring(raw)
-\tname = string.match(name, "([^%.]+)$") or name
-\tlocal available = {}
-\tfor _, item in ipairs(enumType:GetEnumItems()) do
-\t\ttable.insert(available, item.Name)
-\t\tif item.Name == name then
-\t\t\treturn item, item.Name
-\t\tend
-\tend
-\terror(label .. ' "' .. tostring(raw) .. '" is not valid. Available: ' .. table.concat(available, ", "), 0)
-end
-
-local function tryActiveGetter(state, key, fn)
-\tlocal ok, value = pcall(fn)
-\tif ok then
-\t\tstate[key] = plain(value)
-\telse
-\t\tstate.unavailable = state.unavailable or {}
-\t\tstate.unavailable[key] = tostring(value)
-\tend
-end
-
-local function readState(includeDeviceList, requestedDeviceId)
-\tlocal activeDeviceId = tostring(simulator:GetDeviceAsync())
-\tlocal state = {
-\t\tactiveDeviceId = activeDeviceId,
-\t\tisSimulating = activeDeviceId ~= "default",
-\t}
-
-\tif includeDeviceList then
-\t\tlocal devices = getDeviceList()
-\t\tstate.devices = devices
-\tend
-
-\tif requestedDeviceId ~= nil then
-\t\tassertBuiltInDeviceExists(requestedDeviceId)
-\t\tstate.deviceInfo = plain(simulator:GetDeviceInfoAsync(requestedDeviceId))
-\tend
-
-\tif state.isSimulating then
-\t\ttryActiveGetter(state, "resolution", function() return simulator:GetResolutionAsync() end)
-\t\ttryActiveGetter(state, "pixelDensity", function() return simulator:GetPixelDensityAsync() end)
-\t\ttryActiveGetter(state, "orientation", function() return simulator:GetOrientationAsync() end)
-\t\ttryActiveGetter(state, "scalingMode", function() return simulator:GetScalingModeAsync() end)
-\tend
-
-\treturn state
-end
-
-local function applySettings(settings)
-\tlocal applied = {}
-\tif settings.deviceId ~= nil then
-\t\tassertBuiltInDeviceExists(settings.deviceId)
-\t\tsimulator:SetDeviceAsync(settings.deviceId)
-\t\tapplied.deviceId = settings.deviceId
-\tend
-\tif settings.orientation ~= nil then
-\t\tlocal item, name = enumByName(Enum.ScreenOrientation, settings.orientation, "orientation")
-\t\tsimulator:SetOrientationAsync(item)
-\t\tapplied.orientation = name
-\tend
-\tif settings.resolution ~= nil then
-\t\tsimulator:SetResolutionAsync(settings.resolution.width, settings.resolution.height)
-\t\tapplied.resolution = { width = settings.resolution.width, height = settings.resolution.height }
-\tend
-\tif settings.pixelDensity ~= nil then
-\t\tsimulator:SetPixelDensityAsync(settings.pixelDensity)
-\t\tapplied.pixelDensity = settings.pixelDensity
-\tend
-\tif settings.scalingMode ~= nil then
-\t\tlocal item, name = enumByName(Enum.DeviceSimulatorScalingMode, settings.scalingMode, "scalingMode")
-\t\tsimulator:SetScalingModeAsync(item)
-\t\tapplied.scalingMode = name
-\tend
-\treturn applied
-end
-
-if opts.operation == "get" then
-\treturn readState(opts.includeDeviceList ~= false, opts.deviceId)
-end
-
-if opts.operation == "set" then
-\tlocal before = readState(false, nil)
-\tlocal applied
-\tif opts.stopSimulation == true then
-\t\tsimulator:StopSimulationAsync()
-\t\tapplied = { stopSimulation = true }
-\telse
-\t\tapplied = applySettings(opts.settings or {})
-\tend
-\treturn {
-\t\tsuccess = true,
-\t\tapplied = applied,
-\t\tbefore = before,
-\t\tafter = readState(false, nil),
-\t}
-end
-
-error("Unsupported device simulator operation: " .. tostring(opts.operation), 0)
-`.trim();
 }
 
 export class RobloxStudioTools {
@@ -1001,6 +173,10 @@ export class RobloxStudioTools {
     return { content: [{ type: 'text', text: JSON.stringify(body) }] };
   }
 
+  private _structuredResult(body: Record<string, unknown>) {
+    return toStructuredResult(body);
+  }
+
   async getRobloxSkills(action: string, name?: string) {
     if (action !== 'list' && action !== 'get') {
       throw new Error('get_roblox_skills action must be "list" or "get"');
@@ -1016,7 +192,7 @@ export class RobloxStudioTools {
     };
 
     if (action === 'list') {
-      return this._textResult({
+      return this._structuredResult({
         action,
         ...bundleMetadata,
         count: bundle.skills.length,
@@ -1042,7 +218,7 @@ export class RobloxStudioTools {
         bundle.skills.map((candidate) => candidate.name).join(', '),
       );
     }
-    return this._textResult({
+    return this._structuredResult({
       action,
       ...bundleMetadata,
       skill,
@@ -1542,31 +718,6 @@ export class RobloxStudioTools {
   }
 
 
-  async getFileTree(path: string = '', instance_id?: string) {
-    const response = await this._callSingle('/api/file-tree', { path }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
-  }
-
-  async searchFiles(query: string, searchType: string = 'name', instance_id?: string) {
-    const response = await this._callSingle('/api/search-files', { query, searchType }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
-  }
-
-
   async getPlaceInfo(instance_id?: string) {
     const response = await this._callSingle('/api/place-info', {}, undefined, instance_id);
     return {
@@ -1579,11 +730,20 @@ export class RobloxStudioTools {
     };
   }
 
-  async searchObjects(query: string, searchType: string = 'name', propertyName?: string, instance_id?: string) {
+  async searchObjects(
+    query: string,
+    searchType: string = 'name',
+    propertyName?: string,
+    instance_id?: string,
+    root?: string,
+    limit?: number,
+  ) {
     const response = await this._callSingle('/api/search-objects', {
       query,
       searchType,
-      propertyName
+      propertyName,
+      root,
+      limit,
     }, undefined, instance_id);
     return {
       content: [
@@ -1610,40 +770,6 @@ export class RobloxStudioTools {
       ]
     };
   }
-
-  async searchByProperty(propertyName: string, propertyValue: string, instance_id?: string) {
-    if (!propertyName || !propertyValue) {
-      throw new Error('Property name and value are required for search_by_property');
-    }
-    const response = await this._callSingle('/api/search-by-property', {
-      propertyName,
-      propertyValue
-    }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
-  }
-
-  async getClassInfo(className: string, instance_id?: string) {
-    if (!className) {
-      throw new Error('Class name is required for get_class_info');
-    }
-    const response = await this._callSingle('/api/class-info', { className }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
-  }
-
 
   async getProjectStructure(path?: string, maxDepth?: number, scriptsOnly?: boolean, instance_id?: string) {
     const response = await this._callSingle('/api/project-structure', {
@@ -1697,7 +823,7 @@ export class RobloxStudioTools {
 
   async setScriptSource(instancePath: string, source: string, instance_id?: string) {
     if (!instancePath || typeof source !== 'string') {
-      throw new Error('Instance path and source code string are required for set_script_source');
+      throw new Error('Instance path and new_string (complete source) are required for edit_script action=set');
     }
     const response = await this._callSingle('/api/set-script-source', { instancePath, source }, undefined, instance_id);
     return {
@@ -1713,7 +839,7 @@ export class RobloxStudioTools {
 
   async editScriptLines(instancePath: string, oldString: string, newString: string, startLine?: number, instance_id?: string) {
     if (!instancePath || typeof oldString !== 'string' || typeof newString !== 'string') {
-      throw new Error('Instance path, old_string, and new_string are required for edit_script_lines');
+      throw new Error('Instance path, old_string, and new_string are required for edit_script action=replace');
     }
     const payload: Record<string, unknown> = { instancePath, old_string: oldString, new_string: newString };
     if (startLine !== undefined) payload.startLine = startLine;
@@ -1730,7 +856,7 @@ export class RobloxStudioTools {
 
   async insertScriptLines(instancePath: string, afterLine: number, newContent: string, instance_id?: string) {
     if (!instancePath || typeof newContent !== 'string') {
-      throw new Error('Instance path and newContent are required for insert_script_lines');
+      throw new Error('Instance path and new_string are required for edit_script action=insert');
     }
     const response = await this._callSingle('/api/insert-script-lines', { instancePath, afterLine: afterLine || 0, newContent }, undefined, instance_id);
     return {
@@ -1745,7 +871,7 @@ export class RobloxStudioTools {
 
   async deleteScriptLines(instancePath: string, startLine: number, endLine: number, instance_id?: string) {
     if (!instancePath || !startLine || !endLine) {
-      throw new Error('Instance path, startLine, and endLine are required for delete_script_lines');
+      throw new Error('Instance path, startLine, and endLine are required for edit_script action=delete');
     }
     const response = await this._callSingle('/api/delete-script-lines', { instancePath, startLine, endLine }, undefined, instance_id);
     return {
@@ -4016,7 +3142,7 @@ export class RobloxStudioTools {
   async getConnectedInstances() {
     const refresh = this.bridge.refreshTopologyForRouting();
     if (refresh) await refresh;
-    return this._textResult({
+    return this._structuredResult({
       instances: this.bridge.getConnectedInstances(),
       multiplayerGroups: this.bridge.getConnectedMultiplayerGroups(),
     });
@@ -4027,8 +3153,8 @@ export class RobloxStudioTools {
       throw new Error('request_id must contain between 1 and 128 characters');
     }
     const status = await this.bridge.getRequestStatusEverywhere(request_id);
-    if (status) return this._textResult({ ...status });
-    return this._textResult({
+    if (status) return this._structuredResult({ ...status });
+    return this._structuredResult({
       requestId: request_id,
       state: 'unknown',
       outcome: 'unknown',

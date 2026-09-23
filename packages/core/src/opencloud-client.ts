@@ -442,6 +442,7 @@ export class OpenCloudClient {
       const chunks: Buffer[] = [];
       let totalBytes = 0;
       const reader = contentResponse.body.getReader();
+      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;

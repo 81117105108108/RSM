@@ -20,5 +20,13 @@
     "@typescript-eslint/no-explicit-any": "warn",
     "prefer-const": "error",
     "no-var": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["packages/core/src/observability.ts"],
+      "rules": {
+        "no-control-regex": "off"
+      }
+    }
+  ]
 }

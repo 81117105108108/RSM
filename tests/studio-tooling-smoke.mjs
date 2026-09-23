@@ -196,11 +196,8 @@ async function runEditModeToolSmoke(client, instanceId) {
     'get_project_structure',
     'set_properties',
     'get_instance_properties',
-    'set_script_source',
+    'edit_script',
     'get_script_source',
-    'edit_script_lines',
-    'insert_script_lines',
-    'delete_script_lines',
     'find_and_replace_in_scripts',
     'get_attributes',
     'selection',
@@ -218,6 +215,10 @@ async function runEditModeToolSmoke(client, instanceId) {
     'get_selection',
     'set_selection',
     'focus_viewport',
+    'set_script_source',
+    'edit_script_lines',
+    'insert_script_lines',
+    'delete_script_lines',
   ]) {
     assert(!names.has(removed), `tools/list omits removed ${removed}`);
   }
@@ -342,12 +343,13 @@ return true
     });
     assert(tag.success === true && String(tag.returnValue) === 'true', 'execute_luau handles project-specific tag work');
 
-    const setSource = await client.callTool('set_script_source', {
+    const setSource = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: 'local value = 41\nreturn value + 1\n',
+      new_string: 'local value = 41\nreturn value + 1\n',
       instance_id: instanceId,
     });
-    assert(setSource.success === true, 'set_script_source updates smoke script');
+    assert(setSource.success === true, 'edit_script action=set updates smoke script');
 
     const source = await client.callTool('get_script_source', {
       instancePath: scriptPath,
@@ -364,47 +366,50 @@ return true
       String.raw`local windowsPath = "C:\\Users\\dev\\file.lua"`,
       'return newline .. tab .. carriage .. quote .. windowsPath',
     ];
-    const escapedSetSource = await client.callTool('set_script_source', {
+    const escapedSetSource = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: escapeHeavyLines.join('\n'),
+      new_string: escapeHeavyLines.join('\n'),
       instance_id: instanceId,
     });
-    assert(escapedSetSource.success === true, 'set_script_source accepts escape-heavy source');
+    assert(escapedSetSource.success === true, 'edit_script action=set accepts escape-heavy source');
     await assertExactScriptSource(
       escapeHeavyLines,
-      'set_script_source preserves already-decoded source text exactly',
+      'edit_script action=set preserves already-decoded source text exactly',
     );
 
     const quotedReplacement = String.raw`local quote = "say \"bye\""`;
-    const escapedEdit = await client.callTool('edit_script_lines', {
+    const escapedEdit = await client.callTool('edit_script', {
+      action: 'replace',
       instancePath: scriptPath,
       old_string: escapeHeavyLines[3],
       new_string: quotedReplacement,
       line_range: '4',
       instance_id: instanceId,
     });
-    assert(escapedEdit.success === true, 'edit_script_lines accepts escape-heavy source text');
+    assert(escapedEdit.success === true, 'edit_script action=replace accepts escape-heavy source text');
     escapeHeavyLines[3] = quotedReplacement;
     await assertExactScriptSource(
       escapeHeavyLines,
-      'edit_script_lines preserves already-decoded search and replacement text exactly',
+      'edit_script action=replace preserves already-decoded search and replacement text exactly',
     );
 
     const insertedEscapeLines = [
       String.raw`local pattern = "\\n\\t"`,
       String.raw`local json = "{\"key\":\"value\\n\"}"`,
     ];
-    const escapedInsert = await client.callTool('insert_script_lines', {
+    const escapedInsert = await client.callTool('edit_script', {
+      action: 'insert',
       instancePath: scriptPath,
       afterLine: 5,
-      newContent: insertedEscapeLines.join('\n'),
+      new_string: insertedEscapeLines.join('\n'),
       instance_id: instanceId,
     });
-    assert(escapedInsert.success === true, 'insert_script_lines accepts escape-heavy source text');
+    assert(escapedInsert.success === true, 'edit_script action=insert accepts escape-heavy source text');
     escapeHeavyLines.splice(5, 0, ...insertedEscapeLines);
     await assertExactScriptSource(
       escapeHeavyLines,
-      'insert_script_lines preserves already-decoded source text exactly',
+      'edit_script action=insert preserves already-decoded source text exactly',
     );
 
     const pathPattern = String.raw`C:\\Users\\dev\\file.lua`;
@@ -457,13 +462,14 @@ return document:GetText()
     assert(draftSource.source === '1: ',
       `get_script_source preserves an empty live editor draft (${JSON.stringify(draftSource)})`);
 
-    const populatedDraft = await client.callTool('set_script_source', {
+    const populatedDraft = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: 'local beforeClear = true\nreturn beforeClear\n',
+      new_string: 'local beforeClear = true\nreturn beforeClear\n',
       instance_id: instanceId,
     });
     assert(populatedDraft.success === true && populatedDraft.method === 'UpdateSourceAsync',
-      `set_script_source populates the empty live editor draft editor-safely (${JSON.stringify(populatedDraft)})`);
+      `edit_script action=set populates the empty live editor draft editor-safely (${JSON.stringify(populatedDraft)})`);
 
     const populatedRead = await client.callTool('get_script_source', {
       instancePath: scriptPath,
@@ -472,60 +478,66 @@ return document:GetText()
     assertContains(populatedRead.source, 'return beforeClear',
       'get_script_source confirms the live editor draft is non-empty before clearing');
 
-    const clearedSource = await client.callTool('set_script_source', {
+    const clearedSource = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: '',
+      new_string: '',
       instance_id: instanceId,
     });
     assert(clearedSource.success === true && clearedSource.method === 'UpdateSourceAsync',
-      `set_script_source clears a non-empty live editor draft editor-safely (${JSON.stringify(clearedSource)})`);
+      `edit_script action=set clears a non-empty live editor draft editor-safely (${JSON.stringify(clearedSource)})`);
 
     const clearedRead = await client.callTool('get_script_source', {
       instancePath: scriptPath,
       instance_id: instanceId,
     });
     assert(clearedRead.source === '1: ',
-      `set_script_source cleared the non-empty live draft exactly (${JSON.stringify(clearedRead)})`);
+      `edit_script action=set cleared the non-empty live draft exactly (${JSON.stringify(clearedRead)})`);
 
-    const restoredDraft = await client.callTool('set_script_source', {
+    const restoredDraft = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: 'local value = 40\nreturn value + 1\n',
+      new_string: 'local value = 40\nreturn value + 1\n',
       instance_id: instanceId,
     });
-    assert(restoredDraft.success === true, 'set_script_source restores an empty live editor draft');
+    assert(restoredDraft.success === true, 'edit_script action=set restores an empty live editor draft');
 
-    const editedLines = await client.callTool('edit_script_lines', {
+    const editedLines = await client.callTool('edit_script', {
+      action: 'replace',
       instancePath: scriptPath,
       old_string: 'local value = 40',
       new_string: 'local value = 41',
       line_range: '1',
       instance_id: instanceId,
     });
-    assert(editedLines.success === true, 'edit_script_lines verifies its open-document write');
+    assert(editedLines.success === true, 'edit_script action=replace verifies its open-document write');
 
-    const insertedLines = await client.callTool('insert_script_lines', {
+    const insertedLines = await client.callTool('edit_script', {
+      action: 'insert',
       instancePath: scriptPath,
       afterLine: 1,
-      newContent: 'local bonus = 1',
+      new_string: 'local bonus = 1',
       instance_id: instanceId,
     });
-    assert(insertedLines.success === true, 'insert_script_lines verifies its open-document write');
+    assert(insertedLines.success === true, 'edit_script action=insert verifies its open-document write');
 
-    const editedReturn = await client.callTool('edit_script_lines', {
+    const editedReturn = await client.callTool('edit_script', {
+      action: 'replace',
       instancePath: scriptPath,
       old_string: 'return value + 1',
       new_string: 'return value + bonus',
       line_range: '3',
       instance_id: instanceId,
     });
-    assert(editedReturn.success === true, 'edit_script_lines updates inserted line positions');
+    assert(editedReturn.success === true, 'edit_script action=replace updates inserted line positions');
 
-    const deletedLines = await client.callTool('delete_script_lines', {
+    const deletedLines = await client.callTool('edit_script', {
+      action: 'delete',
       instancePath: scriptPath,
       line_range: '2',
       instance_id: instanceId,
     });
-    assert(deletedLines.success === true, 'delete_script_lines verifies its open-document write');
+    assert(deletedLines.success === true, 'edit_script action=delete verifies its open-document write');
 
     const replacedDraft = await client.callTool('find_and_replace_in_scripts', {
       pattern: 'bonus',

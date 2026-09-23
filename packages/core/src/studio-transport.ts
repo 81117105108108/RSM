@@ -1,6 +1,7 @@
 import type { RawData } from 'ws';
 import type { ExecutionOutcome, SettlementDisposition } from './bridge-service.js';
 import { isExecutionOutcome, RequestFailure } from './bridge-service.js';
+import { observeFault } from './observability.js';
 
 export interface StudioSession {
   peerId: string;
@@ -13,6 +14,7 @@ export interface StudioQueuedRequest {
   target: string;
   endpoint: string;
   data: unknown;
+  dataJson?: string;
   remainingMs: number;
 }
 
@@ -159,7 +161,11 @@ export class WebSocketStudioTransport {
     socket: StudioSocket,
     status: () => StudioStatusEvent,
   ): StudioSocketHandle | undefined {
-    if (!this.canOpen(transportPeerId) || socket.readyState !== 1) return undefined;
+    if (!this.canOpen(transportPeerId) || socket.readyState !== 1) {
+      // Observability hook only: transport saturation (no behavior change).
+      if (!this.canOpen(transportPeerId)) observeFault('saturation', 'transport.open');
+      return undefined;
+    }
     this.nextGeneration += 1;
     const claimOwner = `ws:${transportPeerId}:${this.nextGeneration}`;
     const connection: ActiveStudioSocket = {
@@ -334,6 +340,16 @@ export class WebSocketStudioTransport {
         }
         const request = this.queue.claimNextRequestForTransport(connection.transportPeerId, connection.claimOwner);
         if (request) {
+          if (request.dataJson !== undefined) {
+            const { dataJson, ...rest } = request;
+            const wireEvent = { kind: 'request' as const, ...rest, data: rest.data ?? null };
+            const serialized =
+              `{"kind":"request","requestId":${JSON.stringify(wireEvent.requestId)},"peerId":${JSON.stringify(wireEvent.peerId)},` +
+              `"target":${JSON.stringify(wireEvent.target)},"endpoint":${JSON.stringify(wireEvent.endpoint)},` +
+              `"data":${dataJson},"remainingMs":${JSON.stringify(wireEvent.remainingMs)}}`;
+            this.send(connection, wireEvent, serialized);
+            continue;
+          }
           this.send(connection, { kind: 'request', ...request, data: request.data ?? null });
           continue;
         }
@@ -370,6 +386,8 @@ export class WebSocketStudioTransport {
     }
     const bytes = Buffer.byteLength(json);
     if (bytes > MAX_STUDIO_FRAME_BYTES) {
+      // Observability hook only: oversized frame (no behavior change).
+      observeFault('saturation', event.kind === 'request' ? event.endpoint : 'transport.send');
       if (event.kind === 'request') {
         this.queue.settleTransportResponse(connection.transportPeerId, event.requestId, undefined,
           new RequestFailure(
@@ -387,6 +405,8 @@ export class WebSocketStudioTransport {
     }
     if (connection.socket.readyState !== 1
       || connection.socket.bufferedAmount + bytes > MAX_STUDIO_BUFFERED_BYTES) {
+      // Observability hook only: send backpressure (no behavior change).
+      observeFault('saturation', 'transport.send');
       this.closeSocket(connection, 1013, 'server_send_backpressure');
       return;
     }
@@ -402,6 +422,8 @@ export class WebSocketStudioTransport {
   private closeSocket(connection: ActiveStudioSocket, code?: number, reason?: string): void {
     if (connection.closed) return;
     connection.closed = true;
+    // Observability hook only: transport disconnect (no behavior change).
+    if (code !== undefined) observeFault('disconnect', 'transport.socket');
     clearInterval(connection.heartbeatTimer);
     connection.socket.removeListener('message', connection.onMessage);
     connection.acknowledgements.clear();

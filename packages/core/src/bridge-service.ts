@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
+import { observeFault, observeOperation } from './observability.js';
 import type {
   StudioCancellationReason,
   StudioQueuedRequest,
@@ -264,6 +265,8 @@ export function parseFailureDetails(
 interface OperationRecord {
   status: RequestStatus;
   fingerprint: string;
+  /** Endpoint label for observability only (tool, no payload). Never read by routing logic. */
+  tool: string;
   transportPeerId?: string;
   updatedAt: number;
   serializedResult?: string;
@@ -274,6 +277,7 @@ interface PendingRequest {
   id: string;
   endpoint: string;
   data: unknown;
+  dataJson: string;
   targetPeerId: string;
   timestamp: number;
   claimOwner?: string;
@@ -1098,15 +1102,22 @@ export class BridgeService implements StudioTransportQueue {
     if (signal?.aborted) {
       return Promise.reject(new RequestFailure(`Request aborted: ${requestId}; queued; not_executed`, 'request_aborted', details));
     }
+    let dataJson: string;
     let requestBytes: number;
     let fingerprint: string;
     try {
+      dataJson = JSON.stringify(data ?? null);
       const target = this.getPeerById(targetPeerId);
-      fingerprint = createHash('sha256').update(JSON.stringify({ targetPeerId, endpoint, data })).digest('hex');
-      requestBytes = Buffer.byteLength(JSON.stringify({
-        kind: 'request', requestId, peerId: targetPeerId, target: target?.role,
-        endpoint, data: data ?? null, remainingMs: effectiveTimeoutMs,
-      }));
+      const fingerprintPrefix = `{"targetPeerId":${JSON.stringify(targetPeerId)},"endpoint":${JSON.stringify(endpoint)},"data":`;
+      const fingerprintHash = createHash('sha256');
+      fingerprintHash.update(fingerprintPrefix);
+      fingerprintHash.update(dataJson);
+      fingerprintHash.update('}');
+      fingerprint = fingerprintHash.digest('hex');
+      const targetJson = target?.role === undefined ? '' : `"target":${JSON.stringify(target.role)},`;
+      const envelopePrefix = `{"kind":"request","requestId":${JSON.stringify(requestId)},"peerId":${JSON.stringify(targetPeerId)},${targetJson}"endpoint":${JSON.stringify(endpoint)},"data":`;
+      const envelopeSuffix = `,"remainingMs":${effectiveTimeoutMs}}`;
+      requestBytes = Buffer.byteLength(envelopePrefix) + Buffer.byteLength(dataJson) + Buffer.byteLength(envelopeSuffix);
     } catch {
       return Promise.reject(new RequestFailure(`Request ${requestId} cannot be serialized; queued; not_executed`, 'request_serialization_failed', details));
     }
@@ -1141,12 +1152,14 @@ export class BridgeService implements StudioTransportQueue {
       ));
     }
     if (requestBytes > MAX_REQUEST_BYTES) {
+      observeFault('saturation', endpoint);
       return Promise.reject(new RequestFailure(
         `Request ${requestId} is ${requestBytes} bytes at server_send; limit ${MAX_REQUEST_BYTES} bytes; queued; not_executed`,
         'request_too_large', { ...details, bytes: requestBytes, limitBytes: MAX_REQUEST_BYTES, transportStage: 'server_send' },
       ));
     }
     if (this.pendingRequests.size >= MAX_PENDING_REQUESTS || this.pendingRequestBytes + requestBytes > MAX_PENDING_REQUEST_BYTES) {
+      observeFault('saturation', endpoint);
       return Promise.reject(new RequestFailure(
         `Request ${requestId} rejected at admission: pending capacity exceeded (${this.pendingRequests.size}/${MAX_PENDING_REQUESTS} requests, ${this.pendingRequestBytes + requestBytes}/${MAX_PENDING_REQUEST_BYTES} bytes); queued; not_executed`,
         'request_capacity_exceeded', { ...details, bytes: this.pendingRequestBytes + requestBytes, limitBytes: MAX_PENDING_REQUEST_BYTES },
@@ -1164,7 +1177,7 @@ export class BridgeService implements StudioTransportQueue {
     }, effectiveTimeoutMs);
     const now = Date.now();
     const request: PendingRequest = {
-      id: requestId, endpoint, data, targetPeerId, timestamp: now,
+      id: requestId, endpoint, data, dataJson, targetPeerId, timestamp: now,
       resolve, reject, promise, timeoutId, timeoutMs: effectiveTimeoutMs, requestBytes,
       abortSignal: signal, abortListener,
     };
@@ -1172,7 +1185,7 @@ export class BridgeService implements StudioTransportQueue {
     this.pendingRequestBytes += requestBytes;
     this.operations.set(requestId, {
       status: { requestId, targetPeerId, queuedAt: now, stage: 'queued', state: 'pending', outcome: 'pending', executionOutcome: 'unknown' },
-      fingerprint, updatedAt: now, resultBytes: 0,
+      fingerprint, tool: endpoint, updatedAt: now, resultBytes: 0,
     });
     this.pruneOperations(now);
     signal?.addEventListener('abort', abortListener, { once: true });
@@ -1204,6 +1217,15 @@ export class BridgeService implements StudioTransportQueue {
       this.notifyRequestCancelled(request, state === 'timed_out' ? 'timeout' : 'aborted');
     }
     const connectionLost = operation?.status.connectionLostAt !== undefined && operation.status.connectionRestoredAt === undefined;
+    // Observability hook only: fault + operation counters (tool/duration/bytes/outcome, no payloads).
+    if (state === 'timed_out') observeFault('timeout', request.endpoint);
+    else if (state === 'disconnected') observeFault('disconnect', request.endpoint);
+    observeOperation({
+      tool: request.endpoint,
+      durationMs: Date.now() - request.timestamp,
+      bytes: request.requestBytes,
+      outcome: state === 'timed_out' ? 'timeout' : state === 'disconnected' ? 'disconnected' : 'aborted',
+    });
     request.reject(new RequestFailure(
       `${message}: ${request.id}; ${stage}; ${outcome}${connectionLost ? '; connection lost' : ''}; waiter ended, execution is not cancelled or rolled back`,
       state === 'timed_out' ? (connectionLost ? 'request_connection_lost' : 'request_timeout') : `request_${state}`,
@@ -1257,6 +1279,7 @@ export class BridgeService implements StudioTransportQueue {
       target: peer.role,
       endpoint: oldestRequest.endpoint,
       data: oldestRequest.data,
+      dataJson: oldestRequest.dataJson,
       remainingMs: Math.max(1, oldestRequest.timeoutMs - (Date.now() - oldestRequest.timestamp)),
     };
   }
@@ -1397,6 +1420,15 @@ export class BridgeService implements StudioTransportQueue {
     this.pendingCancellations.delete(requestId);
     this.pruneOperations(now);
     if (operation.transportPeerId) this.notifyRequestAvailable(operation.transportPeerId);
+    // Observability hook only: completed-operation counter/histogram (tool/duration/bytes/outcome).
+    observeOperation({
+      tool: operation.tool,
+      durationMs: now - operation.status.queuedAt,
+      bytes: operation.status.resultUnavailable?.bytes ?? operation.resultBytes,
+      outcome: operation.status.outcome === 'success' ? 'success'
+        : operation.status.outcome === 'error' ? 'error'
+        : operation.status.executionOutcome === 'not_executed' ? 'not_executed' : 'unknown',
+    });
     return 'accepted';
   }
 
@@ -1427,6 +1459,7 @@ export class BridgeService implements StudioTransportQueue {
       this.operations.delete(requestId);
       this.retainedResults.delete(requestId);
       this.retainedResultBytes -= operation.resultBytes;
+      observeFault('eviction', operation.tool);
     }
     while (this.operations.size > MAX_OPERATION_RECORDS) {
       let removed = false;
@@ -1435,6 +1468,7 @@ export class BridgeService implements StudioTransportQueue {
         this.operations.delete(requestId);
         this.retainedResults.delete(requestId);
         this.retainedResultBytes -= operation.resultBytes;
+        observeFault('eviction', operation.tool);
         removed = true;
         break;
       }
@@ -1449,6 +1483,7 @@ export class BridgeService implements StudioTransportQueue {
       operation.resultBytes = 0;
       operation.serializedResult = undefined;
       this.retainedResults.delete(requestId);
+      observeFault('eviction', operation.tool);
       if (this.retainedResults.size <= MAX_RETAINED_RESULTS && this.retainedResultBytes <= MAX_RETAINED_RESULT_BYTES) break;
     }
   }

@@ -195,7 +195,7 @@ describe('Tool schema compatibility', () => {
   });
 
   test('script line tools expose line_range instead of startLine/endLine', () => {
-    for (const name of ['edit_script_lines', 'delete_script_lines']) {
+    for (const name of ['edit_script']) {
       const tool = TOOL_DEFINITIONS.find(tool => tool.name === name);
       expect(tool).toBeDefined();
       const schema = tool!.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
@@ -207,8 +207,8 @@ describe('Tool schema compatibility', () => {
       expect(props).not.toHaveProperty('lineRange');
     }
 
-    const deleteRequired = (TOOL_DEFINITIONS.find(tool => tool.name === 'delete_script_lines')!.inputSchema as { required?: string[] }).required ?? [];
-    expect(deleteRequired).toEqual(['instancePath', 'line_range']);
+    const editRequired = (TOOL_DEFINITIONS.find(tool => tool.name === 'edit_script')!.inputSchema as { required?: string[] }).required ?? [];
+    expect(editRequired).toEqual(['action', 'instancePath']);
   });
 
   // Tools that don't dispatch to Studio (asset uploads, local file ops, etc.)
@@ -275,10 +275,7 @@ describe('Tool schema compatibility', () => {
       set_properties: 'setProperties',
       grep_scripts: 'grepScripts',
       get_script_source: 'getScriptSource',
-      set_script_source: 'setScriptSource',
-      edit_script_lines: 'editScriptLines',
-      insert_script_lines: 'insertScriptLines',
-      delete_script_lines: 'deleteScriptLines',
+      edit_script: 'editScriptLines',
       get_attributes: 'getAttributes',
       selection: 'selection',
       execute_luau: 'executeLuau',

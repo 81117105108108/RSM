@@ -30,3 +30,12 @@ catalog. Update exact-name integrations as follows:
 
 The removed names are absent from both `tools/list` and the direct
 `/mcp/<tool>` compatibility routes.
+
+# 4.0 tool consolidation
+
+| Removed tool | Replacement |
+| --- | --- |
+| `edit_script_lines` | `edit_script` with `action: "replace"`; `old_string`, `new_string`, and optional `line_range` are unchanged |
+| `insert_script_lines` | `edit_script` with `action: "insert"`; `afterLine` is unchanged and `newContent` becomes `new_string` |
+| `delete_script_lines` | `edit_script` with `action: "delete"`; `line_range` is unchanged |
+| `set_script_source` | `edit_script` with `action: "set"`; `source` becomes `new_string` |

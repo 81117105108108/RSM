@@ -228,8 +228,12 @@ function createScriptSearch(corpus: ScriptCorpus) {
 			if (snapshot !== undefined && (classFilter === undefined || snapshot.className === classFilter)) {
 				scriptsSearched++;
 				const scriptMatches: LineMatch[] = [];
+				// Head-index queues: Array.shift() is O(n) (table.remove at 1);
+				// advancing a head cursor keeps per-line work O(1).
 				const before: string[] = [];
+				let beforeHead = 0;
 				const pendingAfter: { match: LineMatch; remaining: number }[] = [];
+				let pendingHead = 0;
 				let scriptMatchCount = 0;
 				let lineNumber = 1;
 				let lineStart: number | undefined = 1;
@@ -245,20 +249,43 @@ function createScriptSearch(corpus: ScriptCorpus) {
 					control.checkpoint();
 					const [line, nextLineStart] = readLine(snapshot.source, lineStart);
 
-					for (const pending of pendingAfter) {
-						if (pending.remaining > 0) {
-							pending.match.after.push(line);
-							pending.remaining--;
+					if (pendingHead < pendingAfter.size()) {
+						for (let pendingIndex = pendingHead; pendingIndex < pendingAfter.size(); pendingIndex++) {
+							const pending = pendingAfter[pendingIndex];
+							if (pending.remaining > 0) {
+								pending.match.after.push(line);
+								pending.remaining--;
+							}
+						}
+						while (pendingHead < pendingAfter.size() && pendingAfter[pendingHead].remaining === 0) {
+							pendingHead++;
+						}
+						if (pendingHead > 64 && pendingHead * 2 >= pendingAfter.size()) {
+							const liveCount = pendingAfter.size() - pendingHead;
+							for (let i = 0; i < liveCount; i++) {
+								pendingAfter[i] = pendingAfter[i + pendingHead];
+							}
+							for (let i = 0; i < pendingHead; i++) {
+								pendingAfter.pop();
+							}
+							pendingHead = 0;
 						}
 					}
-					while (pendingAfter.size() > 0 && pendingAfter[0].remaining === 0) {
-						pendingAfter.shift();
-					}
 
-					const candidate = caseSensitive ? line : line.lower();
-					const matchStart = usePattern
-						? findFirstPattern(candidate, patternAlternatives!, control)
-						: string.find(candidate, searchPattern, 1, true)[0];
+					let matchStart: number | undefined;
+					if (usePattern) {
+						matchStart = findFirstPattern(line, patternAlternatives!, control);
+					} else if (caseSensitive) {
+						matchStart = string.find(line, searchPattern, 1, true)[0];
+					} else if (line.size() >= searchPattern.size()) {
+						// string.lower preserves byte length for the ASCII sources
+						// this search targets, so lines shorter than the pattern
+						// can never match. Skipping lower() avoids one
+						// allocation per short line.
+						matchStart = string.find(line.lower(), searchPattern, 1, true)[0];
+					} else {
+						matchStart = undefined;
+					}
 					if (
 						matchStart !== undefined &&
 						(maxResultsPerScript === 0 || scriptMatchCount < maxResultsPerScript)
@@ -270,11 +297,20 @@ function createScriptSearch(corpus: ScriptCorpus) {
 							break;
 						}
 						if (!filesOnly) {
+							let beforeContext: string[];
+							if (contextLines > 0 && before.size() - beforeHead > 0) {
+								beforeContext = [];
+								for (let i = beforeHead; i < before.size(); i++) {
+									beforeContext.push(before[i]);
+								}
+							} else {
+								beforeContext = [];
+							}
 							const lineMatch: LineMatch = {
 								line: lineNumber,
 								column: matchStart,
 								text: line,
-								before: [...before],
+								before: beforeContext,
 								after: [],
 							};
 							scriptMatches.push(lineMatch);
@@ -286,14 +322,26 @@ function createScriptSearch(corpus: ScriptCorpus) {
 					if (
 						maxResultsPerScript > 0 &&
 						scriptMatchCount >= maxResultsPerScript &&
-						pendingAfter.size() === 0
+						pendingHead >= pendingAfter.size()
 					) {
 						break;
 					}
 
 					if (contextLines > 0) {
 						before.push(line);
-						while (before.size() > contextLines) before.shift();
+						if (before.size() - beforeHead > contextLines) {
+							beforeHead++;
+						}
+						if (beforeHead > 1024 && beforeHead * 2 > before.size()) {
+							const liveCount = before.size() - beforeHead;
+							for (let i = 0; i < liveCount; i++) {
+								before[i] = before[i + beforeHead];
+							}
+							for (let i = 0; i < beforeHead; i++) {
+								before.pop();
+							}
+							beforeHead = 0;
+						}
 					}
 					lineStart = nextLineStart;
 					if (nextLineStart === undefined) break;
@@ -313,6 +361,9 @@ function createScriptSearch(corpus: ScriptCorpus) {
 				}
 			}
 
+			// Push children in reverse so pop() visits them in order.
+			// Corpus arrays cross the VM boundary and lack Luau .size(),
+			// so copy them into a VM-local array before indexing.
 			const children: Instance[] = [];
 			for (const child of corpus.getChildren(instance)) children.push(child);
 			for (let index = children.size() - 1; index >= 0; index--) stack.push(children[index]);

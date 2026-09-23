@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events';
 import { BridgeService, MultiplayerGroupInUseError, RequestFailure } from '../bridge-service.js';
 import type { RegisterPeerInput } from '../bridge-service.js';
+import { WebSocketStudioTransport } from '../studio-transport.js';
 
 function register(
   bridge: BridgeService,
@@ -878,6 +880,23 @@ describe('BridgeService', () => {
       expect(bridge.claimNextRequestForTransport('edit-peer', 'socket')).toBeNull();
     });
 
+    test('unserializable requests fail at admission without queueing or consuming an operation ID', async () => {
+      const data: { self?: unknown } = {};
+      data.self = data;
+      const failure = bridge.sendRequest('/api/mutate', data, 'edit-peer', 30_000, undefined, 'circular')
+        .catch((error: unknown) => error);
+      const error = await failure;
+      expect(error).toBeInstanceOf(RequestFailure);
+      if (!(error instanceof RequestFailure)) throw new Error('expected RequestFailure');
+      expect(error.code).toBe('request_serialization_failed');
+      expect(error.details).toMatchObject({
+        requestId: 'circular', targetPeerId: 'edit-peer', stage: 'queued', outcome: 'not_executed',
+      });
+      expect(bridge.getPendingRequestCount()).toBe(0);
+      expect(bridge.getRequestStatus('circular')).toBeUndefined();
+      expect(bridge.claimNextRequestForTransport('edit-peer', 'socket')).toBeNull();
+    });
+
     test('pending admission is bounded and releases capacity after cancellation', async () => {
       const controllers = Array.from({ length: 1024 }, () => new AbortController());
       const pending = controllers.map((controller, index) =>
@@ -987,6 +1006,139 @@ describe('BridgeService', () => {
       bridge.setDeliveryActive('server-peer', 'stream', false);
       bridge.cleanupStalePeers();
       expect(bridge.getPeers()).toEqual([]);
+    });
+  });
+
+  describe('dataJson reuse', () => {
+    class FakeStudioSocket extends EventEmitter {
+      readonly chunks: string[] = [];
+      readyState = 1;
+      bufferedAmount = 0;
+
+      send(chunk: string, callback: (error?: Error) => void): void {
+        this.chunks.push(chunk);
+        this.bufferedAmount = 0;
+        callback();
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+
+      terminate(): void {
+        this.readyState = 3;
+      }
+    }
+
+    const STATUS = { kind: 'status', knownPeer: true, mcpConnected: true } as const;
+
+    test('claim returns single-serialized dataJson and preserves remainingMs and recovery', async () => {
+      register(bridge, { peerId: 'edit-peer', instanceId: 'instance:edit', role: 'edit' });
+      const data = { value: 42, nested: [1, 2, 3] };
+      const dataJson = JSON.stringify(data);
+      const pending = bridge.sendRequest('/api/mutate', data, 'edit-peer', 5000, undefined, 'reuse-id');
+      pending.catch(() => {});
+      // Mutating the caller object after admission must not affect the snapshot.
+      (data as { value: number }).value = 999;
+
+      const claimed = bridge.claimNextRequestForTransport('edit-peer', 'socket');
+      expect(claimed).toMatchObject({ requestId: 'reuse-id', endpoint: '/api/mutate' });
+      expect(claimed?.dataJson).toBe(dataJson);
+      expect(claimed?.data).toEqual({ value: 999, nested: [1, 2, 3] });
+      expect(claimed?.remainingMs).toBeGreaterThan(0);
+      expect(claimed?.remainingMs).toBeLessThanOrEqual(5000);
+      // Claimed work is never replayed to a second owner (recovery).
+      expect(bridge.claimNextRequestForTransport('edit-peer', 'other')).toBeNull();
+      bridge.resolveRequest('reuse-id', { ok: true });
+      await expect(pending).resolves.toEqual({ ok: true });
+    });
+
+    test('post-admission mutation is ignored for delivery, deduplication, and fingerprint stability', async () => {
+      register(bridge, { peerId: 'edit-peer', instanceId: 'instance:edit', role: 'edit' });
+      const data = { value: 1 };
+      const pending = bridge.sendRequest('/api/mutate', data, 'edit-peer', 30_000, undefined, 'stable-id');
+      pending.catch(() => {});
+      data.value = 2;
+
+      const claimed = bridge.claimNextRequestForTransport('edit-peer', 'socket');
+      expect(claimed?.dataJson).toBe(JSON.stringify({ value: 1 }));
+      expect(bridge.claimNextRequestForTransport('edit-peer', 'other')).toBeNull();
+
+      const idempotent = bridge.sendRequest('/api/mutate', { value: 1 }, 'edit-peer', 30_000, undefined, 'stable-id');
+      expect(idempotent).toBe(pending);
+      await expect(bridge.sendRequest('/api/mutate', data, 'edit-peer', 30_000, undefined, 'stable-id'))
+        .rejects.toMatchObject({ code: 'operation_id_collision' });
+
+      bridge.resolveRequest('stable-id', { ok: true });
+      await expect(pending).resolves.toEqual({ ok: true });
+      await expect(idempotent).resolves.toEqual({ ok: true });
+    });
+
+    test('transport pump reuses dataJson without leaking it on wire', async () => {
+      register(bridge, { peerId: 'edit-peer', instanceId: 'instance:edit', role: 'edit' });
+      const transport = new WebSocketStudioTransport(bridge);
+      try {
+        const socket = new FakeStudioSocket();
+        transport.open('edit-peer', socket as never, () => ({ ...STATUS }));
+        const data = { hello: 'world', n: 123 };
+        const dataJson = JSON.stringify(data);
+        const pending = bridge.sendRequest('/api/echo', data, 'edit-peer', 30_000, undefined, 'wire-reuse');
+        pending.catch(() => {});
+        const requestChunk = socket.chunks.find((chunk) => chunk.includes('"kind":"request"'));
+        expect(requestChunk).toBeDefined();
+        expect(requestChunk).toContain(`"data":${dataJson}`);
+        const parsed = JSON.parse(requestChunk!);
+        expect(parsed).not.toHaveProperty('dataJson');
+        expect(parsed).toMatchObject({
+          kind: 'request',
+          requestId: 'wire-reuse',
+          peerId: 'edit-peer',
+          target: 'edit',
+          endpoint: '/api/echo',
+          data,
+          remainingMs: 30_000,
+        });
+        // Manual frame must be byte-identical to a standard serialization of the wire event.
+        expect(requestChunk).toBe(JSON.stringify(parsed));
+        bridge.resolveRequest('wire-reuse', { ok: true });
+        await expect(pending).resolves.toEqual({ ok: true });
+      } finally {
+        transport.close();
+      }
+    });
+
+    test('enforces exact 64MiB admission boundary from dataJson', async () => {
+      register(bridge, { peerId: 'edit-peer', instanceId: 'instance:edit', role: 'edit' });
+      const limit = 64 * 1024 * 1024;
+      const requestId = 'boundary-exact';
+      const endpoint = '/api/mutate';
+      const remainingMs = 30_000;
+      const prefix =
+        `{"kind":"request","requestId":${JSON.stringify(requestId)},"peerId":${JSON.stringify('edit-peer')},` +
+        `"target":${JSON.stringify('edit')},"endpoint":${JSON.stringify(endpoint)},"data":`;
+      const suffix = `,"remainingMs":${remainingMs}}`;
+      const overhead = Buffer.byteLength(prefix) + Buffer.byteLength(suffix) + 2;
+      const exactLen = limit - overhead;
+      expect(exactLen).toBeGreaterThan(0);
+
+      const exactData = 'x'.repeat(exactLen);
+      const exactPending = bridge.sendRequest(endpoint, exactData, 'edit-peer', remainingMs, undefined, requestId);
+      exactPending.catch(() => {});
+      const claimed = bridge.claimNextRequestForTransport('edit-peer', 'socket');
+      expect(claimed?.requestId).toBe(requestId);
+      expect(claimed?.dataJson).toBe(JSON.stringify(exactData));
+      bridge.resolveRequest(requestId, true);
+      await expect(exactPending).resolves.toBe(true);
+
+      const overData = 'x'.repeat(exactLen + 1);
+      const overError = await bridge
+        .sendRequest(endpoint, overData, 'edit-peer', remainingMs, undefined, 'boundary-over1')
+        .then(() => { throw new Error('expected request_too_large'); }, (error: unknown) => error);
+      expect(overError).toBeInstanceOf(RequestFailure);
+      if (!(overError instanceof RequestFailure)) throw new Error('expected RequestFailure');
+      expect(overError.code).toBe('request_too_large');
+      expect(overError.details).toMatchObject({ limitBytes: limit, bytes: limit + 1 });
+      expect(bridge.getPendingRequestCount()).toBe(0);
     });
   });
 });

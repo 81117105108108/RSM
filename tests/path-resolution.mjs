@@ -153,12 +153,13 @@ return true
     const scriptPath = childPath(currentPath, scriptName);
 
     const sourceText = 'local value = 41\nreturn value + 1\n';
-    const setSource = await client.callTool('set_script_source', {
+    const setSource = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: scriptPath,
-      source: sourceText,
+      new_string: sourceText,
       instance_id: instanceId,
     });
-    assert(setSource.success === true, 'set_script_source accepts canonical path');
+    assert(setSource.success === true, 'edit_script action=set accepts canonical path');
 
     const source = await client.callTool('get_script_source', {
       instancePath: scriptPath,
@@ -193,12 +194,13 @@ return true
     assert(quotedLiteralLegacy.properties?.Name === '["Danger"]', 'legacy quoted literal bracket path does not retarget sibling Danger');
 
     const legacyPath = `${rootPath}..dir.ReproScript`;
-    const legacySourceSet = await client.callTool('set_script_source', {
+    const legacySourceSet = await client.callTool('edit_script', {
+      action: 'set',
       instancePath: legacyPath,
-      source: '-- line one\nprint("legacy path works")\n',
+      new_string: '-- line one\nprint("legacy path works")\n',
       instance_id: instanceId,
     });
-    assert(legacySourceSet.success === true, 'set_script_source accepts legacy ..dir path');
+    assert(legacySourceSet.success === true, 'edit_script action=set accepts legacy ..dir path');
 
     const legacySource = await client.callTool('get_script_source', {
       instancePath: legacyScriptPath,

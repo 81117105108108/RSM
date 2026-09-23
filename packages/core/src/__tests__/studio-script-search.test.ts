@@ -32,6 +32,15 @@ interface ScriptSearchModule {
   createScriptSearch(corpus: ScriptCorpus): ScriptSearch;
 }
 
+// Corpus arrays are created outside the VM sandbox, so they need the same
+// Roblox-style size() helper the bundled search code expects from GetChildren().
+const arrayPrototype = Array.prototype as unknown as { size?: () => number };
+if (typeof arrayPrototype.size !== 'function') {
+  arrayPrototype.size = function (this: unknown[]): number {
+    return this.length;
+  };
+}
+
 function installRobloxCollections(context: vm.Context): void {
   vm.runInContext(`
     String.prototype.lower = function() { return String(this).toLowerCase(); };
@@ -492,6 +501,121 @@ describe('Studio script search', () => {
       error: 'invalid_request',
       message: 'usePattern must be a boolean',
     });
+  });
+
+  test('preserves depth-first sibling order across nested descendants', async () => {
+    const root = { id: 'root' };
+    const scriptA = { id: 'a' };
+    const container = { id: 'container' };
+    const scriptC = { id: 'c' };
+    const scriptB = { id: 'b' };
+    const corpus: ScriptCorpus = {
+      resolveRoot: () => root,
+      getChildren: (node) => {
+        if (node === root) return [scriptA, container, scriptB];
+        if (node === container) return [scriptC];
+        return [];
+      },
+      readScript: (node) => {
+        if (node === scriptA) {
+          return { instancePath: 'game.A', name: 'A', className: 'Script', source: 'needle a' };
+        }
+        if (node === scriptC) {
+          return { instancePath: 'game.Container.C', name: 'C', className: 'Script', source: 'needle c' };
+        }
+        if (node === scriptB) {
+          return { instancePath: 'game.B', name: 'B', className: 'Script', source: 'needle b' };
+        }
+        return undefined;
+      },
+    };
+    const module = await loadScriptSearch();
+    const search = module.createScriptSearch(corpus);
+
+    const result = JSON.parse(JSON.stringify(search.search({
+      pattern: 'needle',
+      caseSensitive: true,
+    }, { checkpoint: () => undefined })));
+
+    expect(result.results.map((entry: { instancePath: string }) => entry.instancePath)).toEqual([
+      'game.A',
+      'game.Container.C',
+      'game.B',
+    ]);
+    expect(result.totalMatches).toBe(3);
+  });
+
+  test('keeps exact before/after windows across queue compaction thresholds', async () => {
+    const root = { id: 'root' };
+    const script = { id: 'script' };
+    const fillerCount = 1500;
+    const lines = Array.from({ length: fillerCount }, (_, i) => `filler ${i}`);
+    lines.push('first needle here');
+    lines.push('second needle here');
+    lines.push('trailing one');
+    lines.push('trailing two');
+    const source = lines.join('\n');
+    const corpus: ScriptCorpus = {
+      resolveRoot: () => root,
+      getChildren: (node) => node === root ? [script] : [],
+      readScript: (node) => node === script ? {
+        instancePath: 'game.Workspace.Compaction',
+        name: 'Compaction',
+        className: 'ModuleScript',
+        source,
+      } : undefined,
+    };
+    const module = await loadScriptSearch();
+    const search = module.createScriptSearch(corpus);
+
+    const result = JSON.parse(JSON.stringify(search.search({
+      pattern: 'needle',
+      caseSensitive: true,
+      contextLines: 2,
+    }, { checkpoint: () => undefined })));
+
+    expect(result.totalMatches).toBe(2);
+    expect(result.results[0].matches[0].before).toEqual([
+      `filler ${fillerCount - 2}`,
+      `filler ${fillerCount - 1}`,
+    ]);
+    expect(result.results[0].matches[0].after).toEqual([
+      'second needle here',
+      'trailing one',
+    ]);
+    expect(result.results[0].matches[1].before).toEqual([
+      `filler ${fillerCount - 1}`,
+      'first needle here',
+    ]);
+    expect(result.results[0].matches[1].after).toEqual([
+      'trailing one',
+      'trailing two',
+    ]);
+  });
+
+  test('matches case-insensitively when short lines cannot contain the pattern', async () => {
+    const root = { id: 'root' };
+    const script = { id: 'script' };
+    const corpus: ScriptCorpus = {
+      resolveRoot: () => root,
+      getChildren: (node) => node === root ? [script] : [],
+      readScript: (node) => node === script ? {
+        instancePath: 'game.Workspace.ShortLines',
+        name: 'ShortLines',
+        className: 'ModuleScript',
+        source: 'x\n\ny\nLOCAL NEEDLE = 1',
+      } : undefined,
+    };
+    const module = await loadScriptSearch();
+    const search = module.createScriptSearch(corpus);
+
+    const result = JSON.parse(JSON.stringify(search.search({
+      pattern: 'needle',
+      caseSensitive: false,
+    }, { checkpoint: () => undefined })));
+
+    expect(result).toMatchObject({ totalMatches: 1, scriptsMatched: 1 });
+    expect(result.results[0].matches[0]).toMatchObject({ line: 4, text: 'LOCAL NEEDLE = 1' });
   });
 
 });

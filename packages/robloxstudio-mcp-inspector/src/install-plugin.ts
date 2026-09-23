@@ -38,6 +38,7 @@ async function download(url: string, redirects = 0): Promise<Buffer> {
     const location = res.headers.location;
     if (!location) throw new Error('Redirect with no location header');
     for await (const _chunk of res) {
+      void _chunk;
       // Drain the response before following the redirect.
     }
     return download(location, redirects + 1);

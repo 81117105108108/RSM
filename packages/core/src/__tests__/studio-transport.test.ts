@@ -667,47 +667,121 @@ describe('WebSocketStudioTransport', () => {
     expect(socket.events()).toEqual([STATUS]);
   });
 
-  test('settles an oversized queued command with measured bytes before socket delivery', async () => {
+  test('delivers the admission-time snapshot and ignores post-admission mutation on idempotent retries', async () => {
     register(bridge, 'peer', 'instance:edit', 'edit');
-    const data = { payload: '' };
-    const result = bridge.sendRequest('/api/mutate', data, 'peer', 30_000, undefined, 'oversized');
-    const expectedBytes = MAX_STUDIO_FRAME_BYTES + Buffer.byteLength(JSON.stringify({
-      kind: 'request', requestId: 'oversized', peerId: 'peer', target: 'edit',
-      endpoint: '/api/mutate', data, remainingMs: 30_000,
-    }));
-    const rejected = expect(result).rejects.toMatchObject({
+    const data = { payload: 'initial', nested: { count: 1 } };
+    const result = bridge.sendRequest('/api/mutate', data, 'peer', 30_000, undefined, 'snapshot');
+    data.payload = 'mutated';
+    data.nested.count = 2;
+    const socket = new FakeStudioSocket();
+    transport.open('peer', socket, () => STATUS);
+    const delivered = socket.events().find((event) => event.kind === 'request');
+    if (!delivered || delivered.kind !== 'request') throw new Error('expected request');
+    expect(delivered.data).toEqual({ payload: 'initial', nested: { count: 1 } });
+    const retry = bridge.sendRequest('/api/mutate', { payload: 'initial', nested: { count: 1 } }, 'peer', 30_000, undefined, 'snapshot');
+    expect(retry).toBe(result);
+    await expect(bridge.sendRequest('/api/mutate', data, 'peer', 30_000, undefined, 'snapshot'))
+      .rejects.toMatchObject({ code: 'operation_id_collision' });
+    expect(socket.events().filter((event) => event.kind === 'request')).toHaveLength(1);
+    socket.respond('snapshot', { ok: true });
+    await expect(result).resolves.toEqual({ ok: true });
+    await expect(retry).resolves.toEqual({ ok: true });
+  });
+
+  test('rejects an oversized command at admission before socket delivery', async () => {
+    register(bridge, 'peer', 'instance:edit', 'edit');
+    const socket = new FakeStudioSocket();
+    transport.open('peer', socket, () => STATUS);
+    const failure = await bridge.sendRequest(
+      '/api/mutate', 'x'.repeat(MAX_STUDIO_FRAME_BYTES), 'peer', 30_000, undefined, 'oversized',
+    ).then(() => { throw new Error('expected request_too_large'); }, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(RequestFailure);
+    if (!(failure instanceof RequestFailure)) throw new Error('expected RequestFailure');
+    expect(failure.code).toBe('request_too_large');
+    expect(failure.details).toMatchObject({
+      requestId: 'oversized', targetPeerId: 'peer', stage: 'queued', outcome: 'not_executed',
+      transportStage: 'server_send', limitBytes: MAX_STUDIO_FRAME_BYTES,
+    });
+    expect(failure.details.bytes).toBeGreaterThan(MAX_STUDIO_FRAME_BYTES);
+    expect(socket.events()).toEqual([STATUS]);
+    expect(bridge.getPendingRequestCount()).toBe(0);
+    expect(bridge.claimNextRequestForTransport('peer', 'socket')).toBeNull();
+  });
+
+  test('settles a genuine oversized Studio frame at server_send with measured bytes', async () => {
+    register(bridge, 'peer', 'instance:edit', 'edit');
+    const oversizedJson = JSON.stringify('x'.repeat(MAX_STUDIO_FRAME_BYTES));
+    const prefix = '{"kind":"request","requestId":"oversized-frame","peerId":"peer","target":"edit","endpoint":"/api/mutate","data":';
+    const suffix = ',"remainingMs":30000}';
+    const expectedBytes = Buffer.byteLength(prefix) + Buffer.byteLength(oversizedJson) + Buffer.byteLength(suffix);
+    const realClaim = bridge.claimNextRequestForTransport.bind(bridge);
+    jest.spyOn(bridge, 'claimNextRequestForTransport').mockImplementation((transportPeerId, claimOwner) => {
+      const claimed = realClaim(transportPeerId, claimOwner);
+      return claimed ? { ...claimed, dataJson: oversizedJson } : claimed;
+    });
+    const result = bridge.sendRequest('/api/mutate', {}, 'peer', 30_000, undefined, 'oversized-frame');
+    const socket = new FakeStudioSocket();
+    transport.open('peer', socket, () => STATUS);
+    await expect(result).rejects.toMatchObject({
       code: 'studio_frame_too_large',
       details: {
-        requestId: 'oversized', targetPeerId: 'peer', stage: 'dispatched',
+        requestId: 'oversized-frame', targetPeerId: 'peer', stage: 'dispatched',
         outcome: 'not_executed', transportStage: 'server_send',
         bytes: expectedBytes, limitBytes: MAX_STUDIO_FRAME_BYTES,
       },
     });
-    data.payload = 'x'.repeat(MAX_STUDIO_FRAME_BYTES);
-    const socket = new FakeStudioSocket();
-    transport.open('peer', socket, () => STATUS);
-    await rejected;
-    await expect(result).rejects.toBeInstanceOf(RequestFailure);
     expect(socket.events()).toEqual([STATUS]);
     expect(socket.ended).toBe(false);
     expect(bridge.getPendingRequestCount()).toBe(0);
   });
 
-  test('settles a queued command whose data becomes unserializable before socket delivery', async () => {
+  test('rejects unserializable data at admission before socket delivery', async () => {
     register(bridge, 'peer', 'instance:edit', 'edit');
-    const data: { circular?: unknown } = {};
-    const result = bridge.sendRequest('/api/mutate', data, 'peer');
-    const rejected = expect(result).rejects.toMatchObject({
-      code: 'studio_frame_serialization_failed',
-      details: {
-        targetPeerId: 'peer', stage: 'dispatched', outcome: 'not_executed', transportStage: 'server_send',
-      },
-    });
-    data.circular = data;
     const socket = new FakeStudioSocket();
     transport.open('peer', socket, () => STATUS);
-    await rejected;
-    await expect(result).rejects.toBeInstanceOf(RequestFailure);
+    const data: { self?: unknown } = {};
+    data.self = data;
+    const failure = await bridge.sendRequest(
+      '/api/mutate', data, 'peer', 30_000, undefined, 'circular',
+    ).then(() => { throw new Error('expected request_serialization_failed'); }, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(RequestFailure);
+    if (!(failure instanceof RequestFailure)) throw new Error('expected RequestFailure');
+    expect(failure.code).toBe('request_serialization_failed');
+    expect(failure.details).toMatchObject({
+      requestId: 'circular', targetPeerId: 'peer', stage: 'queued', outcome: 'not_executed',
+    });
+    expect(socket.events()).toEqual([STATUS]);
+    expect(bridge.getPendingRequestCount()).toBe(0);
+    expect(bridge.claimNextRequestForTransport('peer', 'socket')).toBeNull();
+  });
+
+  test('settles genuinely unserializable queued work at server_send without replay', async () => {
+    register(bridge, 'peer', 'instance:edit', 'edit');
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+    const realClaim = bridge.claimNextRequestForTransport.bind(bridge);
+    jest.spyOn(bridge, 'claimNextRequestForTransport').mockImplementation((transportPeerId, claimOwner) => {
+      const claimed = realClaim(transportPeerId, claimOwner);
+      if (!claimed) return claimed;
+      return {
+        requestId: claimed.requestId,
+        peerId: claimed.peerId,
+        target: claimed.target,
+        endpoint: claimed.endpoint,
+        data: circular,
+        remainingMs: claimed.remainingMs,
+      };
+    });
+    const result = bridge.sendRequest('/api/mutate', {}, 'peer', 30_000, undefined, 'deserialized');
+    const socket = new FakeStudioSocket();
+    transport.open('peer', socket, () => STATUS);
+    await expect(result).rejects.toMatchObject({
+      code: 'studio_frame_serialization_failed',
+      details: {
+        requestId: 'deserialized', targetPeerId: 'peer', stage: 'dispatched',
+        outcome: 'not_executed', transportStage: 'server_send',
+      },
+    });
     expect(socket.events()).toEqual([STATUS]);
     expect(bridge.getPendingRequestCount()).toBe(0);
   });

@@ -139,6 +139,7 @@ export class McpClient {
         const line = this.stderrBuf.slice(0, nl).trim();
         this.stderrBuf = this.stderrBuf.slice(nl + 1);
         if (line) this.stderrLines.push(line);
+        if (line.startsWith('[timing]')) process.stderr.write(`${line}\n`);
       }
     });
 

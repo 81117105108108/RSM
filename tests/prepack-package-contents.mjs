@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -17,6 +18,23 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const prepackScript = path.join(repoRoot, 'scripts', 'prepack.mjs');
+
+function resolveNpmInvocation() {
+  if (process.platform !== 'win32') return { command: 'npm', args: [], shell: false };
+  const executableDir = path.dirname(process.execPath);
+  const npmCli = [
+    process.env.npm_execpath,
+    path.join(executableDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.resolve(executableDir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ].find(
+    (candidate) => candidate && /npm-cli\.js$/.test(candidate) && existsSync(candidate),
+  );
+  return npmCli
+    ? { command: process.execPath, args: [npmCli], shell: false }
+    : { command: 'npm.cmd', args: [], shell: true };
+}
+
+const npmInvocation = resolveNpmInvocation();
 const packages = [
   {
     directory: 'robloxstudio-mcp',
@@ -62,11 +80,12 @@ try {
     writeFileSync(path.join(destination, 'stale-source.ts'), 'left by an interrupted pack');
 
     const result = spawnSync(
-      process.platform === 'win32' ? 'npm.cmd' : 'npm',
-      ['pack', '--dry-run', '--json', '--silent'],
+      npmInvocation.command,
+      [...npmInvocation.args, 'pack', '--dry-run', '--json', '--silent'],
       {
         cwd: packageDir,
         encoding: 'utf8',
+        shell: npmInvocation.shell,
       },
     );
     assert.equal(

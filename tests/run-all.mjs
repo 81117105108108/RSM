@@ -32,6 +32,7 @@ if (forceManagedSession) {
 
 const FULL_TESTS = [
   'path-resolution.mjs',
+  'search-objects.mjs',
   'property-value-conversion.mjs',
   'luau-payload-transfers.mjs',
   'capture-broker-transfers.mjs',

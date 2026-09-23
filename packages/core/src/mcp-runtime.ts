@@ -77,7 +77,6 @@ const NON_DESTRUCTIVE_SIDE_EFFECT_TOOLS = new Set([
   'generate_model',
   'import_rbxm',
   'insert_asset',
-  'insert_script_lines',
   'upload_asset',
   'selection',
 ]);
@@ -88,7 +87,6 @@ const IDEMPOTENT_WRITE_TOOLS = new Set([
   'set_device_simulator',
   'set_network_profile',
   'set_properties',
-  'set_script_source',
   'selection',
 ]);
 const OPEN_WORLD_TOOLS = new Set([
@@ -150,13 +148,15 @@ export function normalizeToolResult(raw: unknown, era: ProtocolEra): CallToolRes
   const result = (raw && typeof raw === 'object' ? raw : {}) as ToolResultLike;
   const originalContent = Array.isArray(result.content) ? result.content : [];
   let structured = asStructuredObject(result.structuredContent);
-  const jsonTextIndex = originalContent.findIndex((block) =>
-    block.type === 'text' && typeof block.text === 'string' && !!parseJsonObject(block.text));
-
-  if (!structured) {
-    if (jsonTextIndex >= 0) {
-      structured = parseJsonObject((originalContent[jsonTextIndex] as { type: 'text'; text: string }).text);
-    }
+  let jsonTextIndex = -1;
+  for (let index = 0; index < originalContent.length; index++) {
+    const block = originalContent[index];
+    if (block.type !== 'text' || typeof block.text !== 'string') continue;
+    const parsed = parseJsonObject(block.text);
+    if (!parsed) continue;
+    jsonTextIndex = index;
+    structured ??= parsed;
+    break;
   }
 
   if (!structured) {
@@ -286,8 +286,7 @@ export function serverInstructions(definitions: readonly ToolDefinition[]): stri
   }
   if (has('get_request_status', 'execute_luau', 'set_properties')) {
     instructions.push(
-      'Supply a unique operation_id to execute_luau or set_properties when retry safety matters. After a timeout, query get_request_status with that ID before retrying. Identical arguments reuse a retained outcome; changed arguments are rejected. Recovery and deduplication are bounded to the current server session and five-minute retention window; result payloads may be evicted earlier. Unknown status does not mean unexecuted, and cancellation cannot roll back mutations.',
-      'Request stages are queued, dispatched, executing (plugin handler entered), and response_delivery (handler returned or admission rejected). executionOutcome is separate from waiter state and delivery outcome; handler observations do not prove user Luau instructions ran. A waiter timeout is not an execution deadline or rollback. Neither missing progress nor connection loss proves completion.',
+      'Supply a unique operation_id to execute_luau or set_properties when retry safety matters. After a timeout, query get_request_status with that ID before retrying; unknown status does not mean unexecuted.',
     );
   }
   if (has('search_objects', 'get_project_structure', 'grep_scripts', 'execute_luau')) {
@@ -295,9 +294,9 @@ export function serverInstructions(definitions: readonly ToolDefinition[]): stri
       'Use search_objects, get_project_structure, or grep_scripts for standard discovery. Use execute_luau for custom traversal or bulk edits.',
     );
   }
-  if (has('set_script_source', 'edit_script_lines', 'insert_script_lines', 'delete_script_lines')) {
+  if (has('edit_script')) {
     instructions.push(
-      'Use set_script_source only for whole-script replacement. Use edit_script_lines, insert_script_lines, or delete_script_lines for focused changes.',
+      'Use edit_script action=replace, insert, or delete for focused changes; use action=set only for whole-script replacement.',
     );
   }
   if (has('solo_playtest', 'multiplayer_playtest', 'get_runtime_logs')) {
@@ -360,7 +359,8 @@ export function createToolServer(options: McpRuntimeOptions): McpServer {
           return normalizeToolResult(raw, options.era);
         } catch (error) {
           return normalizeToolResult({
-            content: [{ type: 'text', text: JSON.stringify(publicToolErrorBody(definition.name, error)) }],
+            content: [],
+            structuredContent: publicToolErrorBody(definition.name, error),
             isError: true,
           }, options.era);
         }

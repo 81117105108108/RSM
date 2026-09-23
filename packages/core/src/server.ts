@@ -6,14 +6,17 @@ import { resolveAuthToken } from './auth.js';
 import { RobloxStudioTools } from './tools/index.js';
 import { BridgeService } from './bridge-service.js';
 import { ProxyBridgeService } from './proxy-bridge-service.js';
-import type { ToolDefinition } from './tools/definitions.js';
+import type { ToolDefinition, ToolProfile } from './tools/definitions.js';
+import { getToolsForProfile, resolveToolProfile } from './tools/definitions.js';
 import { createToolServer } from './mcp-runtime.js';
 import { BoundedStdioTransport } from './stdio-transport.js';
+import { setObservabilityLogger } from './observability.js';
 
 export interface ServerConfig {
   name: string;
   version: string;
   tools: ToolDefinition[];
+  toolProfile?: ToolProfile;
 }
 
 export class RobloxStudioMCPServer {
@@ -21,16 +24,32 @@ export class RobloxStudioMCPServer {
   private bridge: BridgeService;
   private allowedToolNames: Set<string>;
   private config: ServerConfig;
+  private toolProfile: ToolProfile;
 
   constructor(config: ServerConfig) {
     this.config = config;
-    this.allowedToolNames = new Set(config.tools.map(t => t.name));
+    this.toolProfile = resolveToolProfile(config.toolProfile);
+    if (this.toolProfile === 'full') {
+      this.allowedToolNames = new Set(config.tools.map(t => t.name));
+    } else {
+      const profileAllowed = new Set(getToolsForProfile(this.toolProfile).map(t => t.name));
+      this.allowedToolNames = new Set(
+        config.tools.map(t => t.name).filter(name => profileAllowed.has(name)),
+      );
+    }
 
     this.bridge = new BridgeService();
     this.tools = new RobloxStudioTools(this.bridge);
   }
 
+  getToolProfile(): ToolProfile {
+    return this.toolProfile;
+  }
+
   async run() {
+    if (process.env.ROBLOX_STUDIO_TIMINGS === '1') {
+      setObservabilityLogger((event) => console.error('[timing]', JSON.stringify(event)));
+    }
     const basePort = process.env.ROBLOX_STUDIO_PORT ? parseInt(process.env.ROBLOX_STUDIO_PORT) : 58741;
     // Bind loopback-only by default. Exposing the bridge on other interfaces
     // (e.g. 0.0.0.0) is an explicit opt-in via ROBLOX_STUDIO_HOST.

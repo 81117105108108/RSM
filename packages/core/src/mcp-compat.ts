@@ -25,6 +25,14 @@ Tool descriptions explain selection. Input schemas explain arguments. This guide
 - Use execute_luau for custom traversal, bulk edits, and work that would otherwise need many tool calls. It runs through the Studio plugin context.
 - Use set_properties when several known properties on one instance can be updated in one request.
 
+## Retries and request status
+
+- Supply a unique operation_id to execute_luau or set_properties when retry safety matters. After a timeout, query get_request_status with that ID before retrying.
+- Identical arguments reuse a retained outcome; changed arguments are rejected. Recovery and deduplication are bounded to the current server session and a five-minute retention window, and result payloads may be evicted earlier.
+- Unknown status does not mean unexecuted, and cancellation cannot roll back mutations.
+- Request stages are queued, dispatched, executing (plugin handler entered), and response_delivery (handler returned or admission rejected). executionOutcome is separate from waiter state and delivery outcome; handler observations do not prove user Luau instructions ran.
+- A waiter timeout is not an execution deadline or rollback. Neither missing progress nor connection loss proves completion.
+
 ## Selection and viewport
 
 - Use selection with action=get when the user's Studio selection should define the scope.
@@ -35,8 +43,8 @@ Tool descriptions explain selection. Input schemas explain arguments. This guide
 ## Script changes
 
 - Read the relevant source with get_script_source before changing it.
-- Use edit_script_lines, insert_script_lines, or delete_script_lines for focused changes with known line numbers.
-- Use set_script_source only when replacing the whole script.
+- Use edit_script with action=replace, insert, or delete for focused changes with known text or line numbers.
+- Use edit_script action=set only when replacing the whole script.
 - Use find_and_replace_in_scripts with dryRun first when a replacement may affect several scripts.
 
 ## Playtests and runtime Luau

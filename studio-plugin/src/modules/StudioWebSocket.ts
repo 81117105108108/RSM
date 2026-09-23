@@ -492,6 +492,9 @@ function connect(expectedGeneration: number): void {
 			return;
 		}
 		socketClient = createdClient;
+		// A socket that never opened proves nothing about the cached registration;
+		// a restarted server rejects the old Peer, so register again via /ready.
+		let opened = false;
 		socketConnections = [
 			createdClient.Opened.Connect((statusCode, _headers) => {
 				if (!active || generation !== expectedGeneration || socketClient !== createdClient) return;
@@ -501,6 +504,7 @@ function connect(expectedGeneration: number): void {
 					return;
 				}
 				socketOpen = true;
+				opened = true;
 				lastValidEventAt = tick();
 				reconnectAttempt = 0;
 				reportTransport({ state: "open", attempt: 0, retryDelay: 0 });
@@ -540,11 +544,12 @@ function connect(expectedGeneration: number): void {
 			}),
 			createdClient.Error.Connect((statusCode, message) => {
 				if (!active || generation !== expectedGeneration || socketClient !== createdClient) return;
-				if (credentialsRejected(statusCode)) cachedReady = undefined;
+				if (!opened || credentialsRejected(statusCode)) cachedReady = undefined;
 				scheduleReconnect(expectedGeneration, `WebSocket error ${statusCode}: ${message}`);
 			}),
 			createdClient.Closed.Connect(() => {
 				if (!active || generation !== expectedGeneration || socketClient !== createdClient) return;
+				if (!opened) cachedReady = undefined;
 				scheduleReconnect(expectedGeneration, "WebSocket closed");
 			}),
 		];

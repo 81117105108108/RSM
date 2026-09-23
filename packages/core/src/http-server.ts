@@ -5,10 +5,11 @@ import { randomBytes } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer } from 'ws';
 import { toNodeHandler } from '@modelcontextprotocol/node';
+import { fromJsonSchema } from '@modelcontextprotocol/server';
 import { RobloxStudioTools } from './tools/index.js';
 import { BridgeService, MultiplayerGroupInUseError, RequestFailure, RoutingFailure } from './bridge-service.js';
 import type { PublicStudioInstance, PublicStudioPeer, RegisterPeerResult } from './bridge-service.js';
-import type { ToolDefinition } from './tools/definitions.js';
+import { TOOL_DEFINITIONS, type ToolDefinition } from './tools/definitions.js';
 import { createToolHttpHandler, normalizeToolResult, publicToolErrorBody } from './mcp-runtime.js';
 import type { ToolInvocationContext } from './mcp-runtime.js';
 import { tokensMatch } from './auth.js';
@@ -56,10 +57,7 @@ const TOOL_PROXY_ENDPOINTS: Record<string, readonly string[]> = {
   get_project_structure: ['/api/project-structure'],
   set_properties: ['/api/set-properties'],
   get_script_source: ['/api/get-script-source'],
-  set_script_source: ['/api/set-script-source'],
-  edit_script_lines: ['/api/edit-script-lines'],
-  insert_script_lines: ['/api/insert-script-lines'],
-  delete_script_lines: ['/api/delete-script-lines'],
+  edit_script: ['/api/set-script-source', '/api/edit-script-lines', '/api/insert-script-lines', '/api/delete-script-lines'],
   get_attributes: ['/api/get-attributes'],
   selection: ['/api/get-selection', '/api/set-selection', '/api/focus-viewport'],
   execute_luau: ['/api/execute-luau'],
@@ -187,7 +185,7 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_roblox_skills: (tools, body) => tools.getRobloxSkills(body.action, body.name),
   get_roblox_docs: (tools, body) => tools.getRobloxDocs(body.name, body.doc_type, body.section),
   get_place_info: (tools, body) => tools.getPlaceInfo(body.instance_id),
-  search_objects: (tools, body) => tools.searchObjects(body.query, body.searchType, body.propertyName, body.instance_id),
+  search_objects: (tools, body) => tools.searchObjects(body.query, body.searchType, body.propertyName, body.instance_id, body.root, body.limit),
   get_instance_properties: (tools, body) => tools.getInstanceProperties(body.instancePath, body.excludeSource, body.instance_id),
   get_project_structure: (tools, body) => tools.getProjectStructure(body.path, body.maxDepth, body.scriptsOnly, body.instance_id),
   set_properties: (tools, body) => tools.setProperties(body.instancePath, body.properties, body.instance_id, body.operation_id),
@@ -205,12 +203,21 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
     const { startLine, endLine } = optionalLineRange(body, 'get_script_source');
     return tools.getScriptSource(body.instancePath, startLine, endLine, body.instance_id);
   },
-  set_script_source: (tools, body) => tools.setScriptSource(body.instancePath, body.source, body.instance_id),
-  edit_script_lines: (tools, body) => tools.editScriptLines(body.instancePath, body.old_string, body.new_string, optionalLineAnchor(body, 'edit_script_lines'), body.instance_id),
-  insert_script_lines: (tools, body) => tools.insertScriptLines(body.instancePath, body.afterLine, body.newContent, body.instance_id),
-  delete_script_lines: (tools, body) => {
-    const { startLine, endLine } = requiredClosedLineRange(body, 'delete_script_lines');
-    return tools.deleteScriptLines(body.instancePath, startLine, endLine, body.instance_id);
+  edit_script: (tools, body) => {
+    switch (body.action) {
+      case 'replace':
+        return tools.editScriptLines(body.instancePath, body.old_string, body.new_string, optionalLineAnchor(body, 'edit_script action=replace'), body.instance_id);
+      case 'insert':
+        return tools.insertScriptLines(body.instancePath, body.afterLine, body.new_string, body.instance_id);
+      case 'delete': {
+        const { startLine, endLine } = requiredClosedLineRange(body, 'edit_script action=delete');
+        return tools.deleteScriptLines(body.instancePath, startLine, endLine, body.instance_id);
+      }
+      case 'set':
+        return tools.setScriptSource(body.instancePath, body.new_string, body.instance_id);
+      default:
+        throw new Error('edit_script requires action=replace|insert|delete|set');
+    }
   },
   get_attributes: (tools, body) => tools.getAttributes(body.instancePath, body.instance_id),
   selection: (tools, body) => tools.selection(body.action, body, body.instance_id),
@@ -313,6 +320,11 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
   const studioLifecycleCapabilities = studioLifecycleCallable
     ? tools.getStudioLifecycleCapabilities()
     : undefined;
+  const inputDefinitions = serverConfig?.tools.length ? serverConfig.tools : TOOL_DEFINITIONS;
+  const inputValidators = new Map(inputDefinitions.map((definition) => [
+    definition.name,
+    fromJsonSchema(definition.inputSchema as Record<string, unknown>),
+  ] as const));
   let mcpServerActive = false;
   let lastMCPActivity = 0;
   let mcpServerStartTime = 0;
@@ -498,12 +510,11 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
     res.status(401).json({
       error: 'unauthorized',
       message: 'Missing or invalid auth token. Send it as "X-MCP-Auth: <token>" or "Authorization: Bearer <token>". ' +
-        (security?.authTokenHint ?? 'The token is in ~/.robloxstudio-mcp/auth-token (or ROBLOX_STUDIO_AUTH_TOKEN).'),
+        'Check server startup diagnostics for the configured token source.',
     });
   });
 
   app.use(express.json({ limit: HTTP_BODY_LIMIT_BYTES }));
-  app.use(express.urlencoded({ limit: HTTP_BODY_LIMIT_BYTES, extended: true }));
   const handleBodySizeError: ErrorRequestHandler = (error: unknown, _req, res, next) => {
     if (!error || typeof error !== 'object' || !('type' in error) || error.type !== 'entity.too.large') {
       next(error);
@@ -956,7 +967,21 @@ export function createHttpServer(tools: RobloxStudioTools, bridge: BridgeService
 
     app.post(`/mcp/${toolName}`, async (req, res) => {
       try {
-        const result = normalizeToolResult(await handler(tools, req.body), 'modern');
+        const validator = inputValidators.get(toolName);
+        let args = req.body;
+        if (validator) {
+          const validated = await validator['~standard'].validate(args);
+          if (validated.issues) {
+            res.status(400).json({
+              error: 'invalid_arguments',
+              message: `Invalid arguments for ${toolName}.`,
+              issues: validated.issues.slice(0, 20).map((issue) => issue.message),
+            });
+            return;
+          }
+          args = validated.value;
+        }
+        const result = normalizeToolResult(await handler(tools, args), 'modern');
         if (result.structuredContent && result.content.length === 0) {
           res.json(result.structuredContent);
         } else {

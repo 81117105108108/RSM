@@ -206,6 +206,17 @@ describe('HTTP security', () => {
       expect(res.status).toBe(401);
     });
 
+    it('does not disclose an absolute token path to unauthorized clients', async () => {
+      const secretPath = 'C:\\Users\\private-user\\.robloxstudio-mcp\\auth-token';
+      const app = createHttpServer(tools, bridge, undefined, undefined, {
+        authToken: TOKEN,
+        authTokenHint: `The token is in ${secretPath}.`,
+      });
+      const res = await request(app).get('/topology').expect(401);
+      expect(res.body.message).not.toContain(secretPath);
+      expect(res.body.message).toContain('server startup diagnostics');
+    });
+
     it('accepts X-MCP-Auth and Authorization: Bearer', async () => {
       const app = authedApp();
       const viaHeader = await request(app).get('/topology').set('X-MCP-Auth', TOKEN);

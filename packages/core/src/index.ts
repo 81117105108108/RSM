@@ -11,14 +11,23 @@ export {
 export type { StudioServerEvent, StudioSocket, StudioSocketHandle } from './studio-transport.js';
 export { BridgeService, MultiplayerGroupInUseError, RequestFailure } from './bridge-service.js';
 export type { ExecutionOutcome, RequestStage, RequestObservations, RequestStatus, RequestFailureDetails } from './bridge-service.js';
-export { RobloxStudioTools } from './tools/index.js';
+export { RobloxStudioTools, toStructuredResult } from './tools/index.js';
+export type { StructuredToolResult } from './tools/index.js';
 export { StudioHttpClient } from './tools/studio-client.js';
 export {
   TOOL_DEFINITIONS,
+  MINIMAL_TOOL_NAMES,
+  TOOL_PROFILE_NAMES,
+  DEFAULT_TOOL_PROFILE,
   getAllTools,
   getReadOnlyTools,
+  getMinimalTools,
+  getToolsForProfile,
+  isToolProfile,
+  resolveAllowedToolNamesForProfile,
+  resolveToolProfile,
 } from './tools/definitions.js';
-export type { ToolDefinition, ToolCategory } from './tools/definitions.js';
+export type { ToolDefinition, ToolCategory, ToolProfile } from './tools/definitions.js';
 export { OpenCloudClient } from './opencloud-client.js';
 export {
   configurePluginAssetForPort,
