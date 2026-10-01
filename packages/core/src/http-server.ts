@@ -63,7 +63,7 @@ const TOOL_PROXY_ENDPOINTS: Record<string, readonly string[]> = {
   execute_luau: ['/api/execute-luau'],
   eval_server_runtime: ['/api/eval-runtime'],
   eval_client_runtime: ['/api/eval-runtime'],
-  grep_scripts: ['/api/grep-scripts'],
+  ast_grep_scripts: ['/api/grep-scripts'],
   solo_playtest: ['/api/start-playtest', '/api/stop-playtest', '/api/multiplayer-test-state'],
   multiplayer_playtest: [
     '/api/multiplayer-test-start', '/api/multiplayer-test-add-players',
@@ -189,13 +189,13 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   get_instance_properties: (tools, body) => tools.getInstanceProperties(body.instancePath, body.excludeSource, body.instance_id),
   get_project_structure: (tools, body) => tools.getProjectStructure(body.path, body.maxDepth, body.scriptsOnly, body.instance_id),
   set_properties: (tools, body) => tools.setProperties(body.instancePath, body.properties, body.instance_id, body.operation_id),
-  grep_scripts: (tools, body, context) => tools.grepScripts(body.pattern, {
-    caseSensitive: body.caseSensitive,
-    usePattern: body.usePattern,
-    contextLines: body.contextLines,
+  ast_grep_scripts: (tools, body, context) => tools.grepScripts(body.pattern, {
+    caseSensitive: body.caseSensitive ?? false,
+    usePattern: false,
+    contextLines: body.contextLines ?? 0,
     maxResults: body.maxResults,
-    maxResultsPerScript: body.maxResultsPerScript,
-    filesOnly: body.filesOnly,
+    maxResultsPerScript: 10,
+    filesOnly: (body.contextLines ?? 0) === 0 ? (body.filesOnly ?? true) : false,
     path: body.path,
     classFilter: body.classFilter,
   }, body.instance_id, context?.signal),

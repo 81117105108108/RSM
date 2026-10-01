@@ -55,7 +55,7 @@ tabs such as `58742` are not the supported routing model.
 - `minimal`: common read-only discovery tools
   (`get_place_info`, `search_objects`, `get_instance_properties`,
   `get_project_structure`, `get_script_source`, `get_attributes`,
-  `grep_scripts`, `get_connected_instances`, `get_request_status`,
+  `ast_grep_scripts`, `get_connected_instances`, `get_request_status`,
   `get_runtime_logs`, `get_roblox_docs`, `get_roblox_skills`).
 
 Profiles resolve through `resolveToolProfile()` / `getToolsForProfile()` /

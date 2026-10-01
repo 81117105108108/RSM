@@ -339,7 +339,17 @@ describe('Studio grep responsiveness', () => {
 
     expect(sendRequest).toHaveBeenCalledWith(
       '/api/grep-scripts',
-      { pattern: 'needle' },
+      {
+        pattern: 'needle',
+        caseSensitive: false,
+        usePattern: false,
+        contextLines: 0,
+        maxResults: 50,
+        maxResultsPerScript: 10,
+        filesOnly: true,
+        path: undefined,
+        classFilter: undefined,
+      },
       'peer:test',
       120_000,
       controller.signal,

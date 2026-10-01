@@ -296,7 +296,21 @@ function createScriptSearch(corpus: ScriptCorpus) {
 							hitLimit = true;
 							break;
 						}
-						if (!filesOnly) {
+						// ast-grep filesOnly fast path: record presence only, skip
+						// line text + before/after allocation entirely. One hit per
+						// script is enough to list the file — far fewer tokens and
+						// no per-line context bookkeeping.
+						if (filesOnly) {
+							if (scriptMatches.size() === 0) {
+								scriptMatches.push({ line: lineNumber, column: matchStart, text: "", before: [], after: [] });
+							}
+							// Keep counting for totalMatches/limits but don't store more.
+							// Skip context buffers entirely in filesOnly mode.
+							lineStart = nextLineStart;
+							if (nextLineStart === undefined) break;
+							lineNumber++;
+							continue;
+						} else {
 							let beforeContext: string[];
 							if (contextLines > 0 && before.size() - beforeHead > 0) {
 								beforeContext = [];

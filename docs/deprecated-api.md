@@ -13,7 +13,7 @@ catalog. Update exact-name integrations as follows:
 | `multiplayer_test_end` | `multiplayer_playtest` with `action: "end"` |
 | `get_selection` | `selection` with `action: "get"` |
 | `get_file_tree` | `get_project_structure` |
-| `search_files` | `search_objects` for instances; `grep_scripts` for source |
+| `search_files` | `search_objects` for instances; `ast_grep_scripts` for source |
 | `search_by_property` | `search_objects` with `searchType: "property"` |
 | `get_class_info` | `get_roblox_docs` or a `robloxdocs://classes/{className}` resource |
 | `export_build`, `create_build`, `generate_build`, `import_build`, `list_library`, `get_build`, `import_scene` | Project-local Luau modules or agent skills backed by `execute_luau` and retained focused tools |

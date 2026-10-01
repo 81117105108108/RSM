@@ -178,15 +178,74 @@ export class OpenCloudClient {
   private apiKey: string;
   private baseUrl: string;
   private timeout: number;
+  private cache = new Map<string, { exp: number; val: unknown }>();
+  private inflight = new Map<string, Promise<unknown>>();
 
   constructor(config: OpenCloudConfig = {}) {
     this.apiKey = config.apiKey || process.env.ROBLOX_OPEN_CLOUD_API_KEY || '';
     this.baseUrl = config.baseUrl || 'https://apis.roblox.com';
-    this.timeout = config.timeout || 30000;
+    this.timeout = config.timeout && Number.isFinite(config.timeout)
+      ? Math.min(Math.max(config.timeout, 2000), 60_000) : 15_000;
   }
 
   hasApiKey(): boolean {
     return !!this.apiKey;
+  }
+
+  private cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+    const now = Date.now();
+    const hit = this.cache.get(key);
+    if (hit && hit.exp > now) return Promise.resolve(hit.val as T);
+    const f = this.inflight.get(key) as Promise<T> | undefined;
+    if (f) return f;
+    const p = fn().then((v) => {
+      const isNull = v === null || v === undefined;
+      if (!isNull) {
+        if (this.cache.size > 300) {
+          const oldest = this.cache.keys().next().value;
+          if (oldest !== undefined) this.cache.delete(oldest);
+        }
+        this.cache.set(key, { exp: Date.now() + ttlMs, val: v });
+      }
+      this.inflight.delete(key);
+      return v;
+    }).catch((e) => { this.inflight.delete(key); throw e; });
+    this.inflight.set(key, p);
+    return p;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  private async fetchRetry(url: string, init: RequestInit, attempts = 3): Promise<Response> {
+    const caller = init.signal as AbortSignal | undefined;
+    if (caller?.aborted) throw new DOMException('Aborted', 'AbortError');
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), this.timeout);
+      const onAbort = () => ctrl.abort();
+      caller?.addEventListener?.('abort', onAbort, { once: true });
+      try {
+        const res = await fetch(url, { ...init, signal: ctrl.signal });
+        if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+          const ra = Number(res.headers.get('retry-after'));
+          await this.sleep(Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, 4000) : 250 * 2 ** i + Math.random() * 120);
+          lastErr = new Error(`HTTP ${res.status}`);
+          continue;
+        }
+        return res;
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError' && caller?.aborted) throw e;
+        lastErr = e;
+        if (i < attempts - 1) await this.sleep(250 * 2 ** i + Math.random() * 120);
+      } finally {
+        clearTimeout(t);
+        caller?.removeEventListener?.('abort', onAbort);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   private async request<T>(
@@ -226,12 +285,12 @@ export class OpenCloudClient {
         headers['x-api-key'] = this.apiKey;
       }
 
-      const response = await fetch(url.toString(), {
+      const response = await this.fetchRetry(url.toString(), {
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
-      });
+      }, 3);
 
       clearTimeout(timeoutId);
 
@@ -270,26 +329,32 @@ export class OpenCloudClient {
   }
 
   async searchAssets(params: AssetSearchParams): Promise<AssetSearchResponse> {
-    return this.request<AssetSearchResponse>('/toolbox-service/v2/assets:search', {
+    const q = typeof params.query === 'string' ? params.query.slice(0, 200) : params.query;
+    const size = params.maxPageSize && Number.isFinite(params.maxPageSize)
+      ? Math.min(Math.max(Math.floor(params.maxPageSize), 1), 100) : 25;
+    const key = `s:${params.searchCategoryType}:${q ?? ''}:${size}:${params.sortCategory ?? ''}:${params.sortDirection ?? ''}:${params.userId ?? ''}:${params.groupId ?? ''}:${params.pageNumber ?? ''}:${params.pageToken ?? ''}`;
+    return this.cached(key, 60_000, () => this.request<AssetSearchResponse>('/toolbox-service/v2/assets:search', {
       authRequired: false,
       params: {
         searchCategoryType: params.searchCategoryType,
-        query: params.query,
+        query: q,
         pageToken: params.pageToken,
         pageNumber: params.pageNumber,
-        maxPageSize: params.maxPageSize || 25,
+        maxPageSize: size,
         sortDirection: params.sortDirection,
         sortCategory: params.sortCategory,
         userId: params.userId,
         groupId: params.groupId,
       },
-    });
+    }));
   }
 
   async getAssetDetails(assetId: number): Promise<CreatorStoreAsset> {
-    return this.request<CreatorStoreAsset>(`/toolbox-service/v2/assets/${assetId}`, {
+    if (!Number.isFinite(assetId) || assetId <= 0) throw new Error(`Invalid assetId ${String(assetId)}`);
+    const id = Math.floor(assetId);
+    return this.cached(`d:${id}`, 300_000, () => this.request<CreatorStoreAsset>(`/toolbox-service/v2/assets/${id}`, {
       authRequired: false,
-    });
+    }));
   }
 
   async listAssetVersions(
@@ -309,29 +374,34 @@ export class OpenCloudClient {
     assetId: number,
     size: '150x150' | '420x420' | '768x432' = '420x420'
   ): Promise<{ base64: string; mimeType: string } | null> {
-    const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${assetId}&size=${size}&format=Png`;
+    if (!Number.isFinite(assetId) || assetId <= 0) return null;
+    const id = Math.floor(assetId);
+    return this.cached(`t:${id}:${size}`, 300_000, async () => {
+      const url = `https://thumbnails.roblox.com/v1/assets?assetIds=${id}&size=${size}&format=Png`;
 
-    try {
-      const response = await fetch(url);
-      if (!response.ok) return null;
+      try {
+        const response = await this.fetchRetry(url, {}, 2);
+        if (!response.ok) return null;
 
-      const data = (await response.json()) as { data: ThumbnailResponse[] };
-      const thumbnail = data.data[0];
+        const data = (await response.json()) as { data: ThumbnailResponse[] };
+        const thumbnail = data.data[0];
 
-      if (!thumbnail || thumbnail.state !== 'Completed' || !thumbnail.imageUrl) {
+        if (!thumbnail || thumbnail.state !== 'Completed' || !thumbnail.imageUrl) {
+          return null;
+        }
+
+        // Fetch the actual image and convert to base64
+        const imageResponse = await this.fetchRetry(thumbnail.imageUrl, {}, 2);
+        if (!imageResponse.ok) return null;
+
+        const arrayBuffer = await imageResponse.arrayBuffer();
+        if (arrayBuffer.byteLength > 3_000_000) return null;
+        const base64 = Buffer.from(arrayBuffer).toString('base64');
+        return { base64, mimeType: 'image/png' };
+      } catch {
         return null;
       }
-
-      // Fetch the actual image and convert to base64
-      const imageResponse = await fetch(thumbnail.imageUrl);
-      if (!imageResponse.ok) return null;
-
-      const arrayBuffer = await imageResponse.arrayBuffer();
-      const base64 = Buffer.from(arrayBuffer).toString('base64');
-      return { base64, mimeType: 'image/png' };
-    } catch {
-      return null;
-    }
+    });
   }
 
   async getAssetThumbnails(

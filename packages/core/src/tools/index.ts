@@ -23,7 +23,7 @@ import { rgbaToJpeg } from '../jpeg-encoder.js';
 import { rgbaToPng } from '../png-encoder.js';
 import * as fs from 'fs';
 import * as path from 'path';
-import { sleep, errorMessage, asRecord, asRows, numberField, stringField } from './util.js';
+import { sleep, errorMessage, asRecord, asRows, numberField, stringField, clampInt, budgetedJson, isPlainLiteral } from './util.js';
 import { CREATOR_STORE_SORT_CATEGORIES, normalizeCreatorStoreSearch, normalizeSearchAssetDescription, robloxAssetIdFromContentId, compactPreviewHierarchy, compactSoundReference } from './asset-helpers.js';
 import { loadMicroProfilerBaseline, compareMicroProfilerCaptures } from './micro-profiler-compare.js';
 import { type DeviceSimulatorSettings, type DeviceSimulatorMatrixEntry, type SimulationInclude, SIMULATION_PERSISTENCE_NOTES, normalizeNetworkProfile, buildNetworkProfileLuau, buildNetworkStateLuau, normalizeDeviceSimulatorSettings, hasDeviceSimulatorSettings, buildDeviceSimulatorLuau } from './simulation-luau.js';
@@ -738,21 +738,17 @@ export class RobloxStudioTools {
     root?: string,
     limit?: number,
   ) {
+    if (!query || typeof query !== 'string' || query.length > 512) {
+      throw new Error('search_objects query must be 1-512 chars');
+    }
     const response = await this._callSingle('/api/search-objects', {
       query,
       searchType,
       propertyName,
       root,
-      limit,
+      limit: clampInt(limit, 1, 100, 50),
     }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
+    return { content: [{ type: 'text', text: budgetedJson(response, 24_000).text }] };
   }
 
 
@@ -760,31 +756,17 @@ export class RobloxStudioTools {
     if (!instancePath) {
       throw new Error('Instance path is required for get_instance_properties');
     }
-    const response = await this._callSingle('/api/instance-properties', { instancePath, excludeSource }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
+    const response = await this._callSingle('/api/instance-properties', { instancePath, excludeSource: excludeSource ?? true }, undefined, instance_id);
+    return { content: [{ type: 'text', text: budgetedJson(response, 24_000).text }] };
   }
 
   async getProjectStructure(path?: string, maxDepth?: number, scriptsOnly?: boolean, instance_id?: string) {
     const response = await this._callSingle('/api/project-structure', {
       path,
-      maxDepth,
+      maxDepth: clampInt(maxDepth, 1, 5, 3),
       scriptsOnly
     }, undefined, instance_id);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
-    };
+    return { content: [{ type: 'text', text: budgetedJson(response, 24_000).text }] };
   }
 
   async setProperties(instancePath: string, properties: Record<string, unknown>, instance_id?: string, operation_id?: string) {
@@ -900,23 +882,46 @@ export class RobloxStudioTools {
     instance_id?: string,
     signal?: AbortSignal,
   ) {
-    if (!pattern) {
+    if (!pattern || typeof pattern !== 'string') {
       throw new Error('Pattern is required for grep_scripts');
     }
     if (Buffer.byteLength(pattern, 'utf8') > MAX_GREP_PATTERN_UTF8_BYTES) {
       throw new Error(`Pattern must not exceed ${MAX_GREP_PATTERN_UTF8_BYTES} UTF-8 bytes`);
     }
+    // Token-efficient ast-grep first: plain identifiers use literal fast path
+    // (no Lua-pattern backtracking), capped results, no context unless asked.
+    // This keeps the same /api/grep-scripts contract but avoids the heavy
+    // full-source + 100-line-context responses that blow token budgets.
+    const o = options ?? {};
+    const maxResults = clampInt(o.maxResults, 1, 200, 50);
+    const maxPer = clampInt(o.maxResultsPerScript ?? 10, 0, 100, 10);
+    const ctx = clampInt(o.contextLines ?? 0, 0, 5, 0);
+    const filesOnly = o.filesOnly ?? (ctx === 0);
+    const usePattern = o.usePattern === true && !isPlainLiteral(pattern);
+    const clamped = (o.maxResults !== undefined && o.maxResults !== maxResults)
+      || (o.contextLines !== undefined && o.contextLines !== ctx)
+      || (o.maxResultsPerScript !== undefined && o.maxResultsPerScript !== maxPer);
+    if (o.path !== undefined && (typeof o.path !== 'string' || o.path.length > 512 || o.path.includes('..'))) {
+      throw new Error('grep_scripts path must be a canonical subtree path (<=512 chars, no "..")');
+    }
+    if (o.classFilter !== undefined && !['Script', 'LocalScript', 'ModuleScript'].includes(o.classFilter)) {
+      throw new Error('grep_scripts classFilter must be Script|LocalScript|ModuleScript');
+    }
     const response = await this._callSingle('/api/grep-scripts', {
       pattern,
-      ...(options ?? {}),
-    }, undefined, instance_id, GREP_SCRIPTS_TIMEOUT_MS, signal);
+      caseSensitive: o.caseSensitive ?? false,
+      usePattern,
+      contextLines: ctx,
+      maxResults,
+      maxResultsPerScript: maxPer,
+      filesOnly,
+      path: o.path,
+      classFilter: o.classFilter,
+    }, undefined, instance_id, GREP_SCRIPTS_TIMEOUT_MS, signal) as Record<string, unknown>;
+    if (clamped) response.appliedLimits = { maxResults, contextLines: ctx, maxResultsPerScript: maxPer };
+    const { text } = budgetedJson(response, 24_000);
     return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(response)
-        }
-      ]
+      content: [{ type: 'text', text }]
     };
   }
 

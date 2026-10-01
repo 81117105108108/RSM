@@ -429,6 +429,23 @@ export class BridgeService implements StudioTransportQueue {
   private readonly peerClosedListeners = new Set<PeerClosedListener>();
   private readonly deliveryOwnersByTransportPeer = new Map<string, Set<string>>();
   private readonly requestTimeout = 30_000;
+  // Cache only finite endpoint/role strings (hot, tiny set). Never cache requestId/peerId (unique per call).
+  private readonly endpointQuoteCache = new Map<string, string>();
+  private quotedEndpoint(s: string): string {
+    let q = this.endpointQuoteCache.get(s);
+    if (q === undefined) {
+      q = JSON.stringify(s);
+      if (this.endpointQuoteCache.size > 64) {
+        const oldest = this.endpointQuoteCache.keys().next().value;
+        if (oldest !== undefined) this.endpointQuoteCache.delete(oldest);
+      }
+      this.endpointQuoteCache.set(s, q);
+    }
+    return q;
+  }
+  private quoted(s: string): string {
+    return JSON.stringify(s);
+  }
 
   onPeerRegistered(listener: PeerRegisteredListener): () => void {
     this.peerRegisteredListeners.add(listener);
@@ -1108,14 +1125,14 @@ export class BridgeService implements StudioTransportQueue {
     try {
       dataJson = JSON.stringify(data ?? null);
       const target = this.getPeerById(targetPeerId);
-      const fingerprintPrefix = `{"targetPeerId":${JSON.stringify(targetPeerId)},"endpoint":${JSON.stringify(endpoint)},"data":`;
+      const fingerprintPrefix = `{"targetPeerId":${JSON.stringify(targetPeerId)},"endpoint":${this.quotedEndpoint(endpoint)},"data":`;
       const fingerprintHash = createHash('sha256');
       fingerprintHash.update(fingerprintPrefix);
       fingerprintHash.update(dataJson);
       fingerprintHash.update('}');
       fingerprint = fingerprintHash.digest('hex');
-      const targetJson = target?.role === undefined ? '' : `"target":${JSON.stringify(target.role)},`;
-      const envelopePrefix = `{"kind":"request","requestId":${JSON.stringify(requestId)},"peerId":${JSON.stringify(targetPeerId)},${targetJson}"endpoint":${JSON.stringify(endpoint)},"data":`;
+      const targetJson = target?.role === undefined ? '' : `"target":${this.quotedEndpoint(target.role)},`;
+      const envelopePrefix = `{"kind":"request","requestId":${JSON.stringify(requestId)},"peerId":${JSON.stringify(targetPeerId)},${targetJson}"endpoint":${this.quotedEndpoint(endpoint)},"data":`;
       const envelopeSuffix = `,"remainingMs":${effectiveTimeoutMs}}`;
       requestBytes = Buffer.byteLength(envelopePrefix) + Buffer.byteLength(dataJson) + Buffer.byteLength(envelopeSuffix);
     } catch {

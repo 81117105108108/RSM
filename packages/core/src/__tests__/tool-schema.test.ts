@@ -149,8 +149,8 @@ describe('Tool schema compatibility', () => {
     expect(TOOL_GUIDE_MARKDOWN).toContain('An empty paths array in set mode clears it');
   });
 
-  test('grep_scripts exposes one bounded pattern-mode contract', () => {
-    const grep = TOOL_DEFINITIONS.find(tool => tool.name === 'grep_scripts')!;
+  test('ast_grep_scripts exposes one bounded structural contract', () => {
+    const grep = TOOL_DEFINITIONS.find(tool => tool.name === 'ast_grep_scripts')!;
     const props = (grep.inputSchema as {
       properties?: Record<string, {
         type?: string;
@@ -158,16 +158,20 @@ describe('Tool schema compatibility', () => {
         minimum?: number;
         maximum?: number;
         maxLength?: number;
+        enum?: string[];
       }>;
     }).properties ?? {};
 
-    expect(props.usePattern).toMatchObject({ type: 'boolean' });
     expect(props.isRegex).toBeUndefined();
-    expect(props.caseSensitive.description).toContain('patterns are always case-sensitive');
-    expect(props.pattern).toMatchObject({ maxLength: 4096 });
-    expect(props.contextLines).toMatchObject({ minimum: 0, maximum: 100 });
-    expect(props.maxResults).toMatchObject({ minimum: 1, maximum: 10_000 });
-    expect(props.maxResultsPerScript).toMatchObject({ minimum: 0, maximum: 10_000 });
+    expect(props.usePattern).toBeUndefined();
+    expect(props.syntax).toBeUndefined();
+    expect(props.caseSensitive).toMatchObject({ type: 'boolean' });
+    expect(props.contextLines).toMatchObject({ minimum: 0, maximum: 5 });
+    expect(props.pattern).toMatchObject({ maxLength: 512 });
+    expect(props.maxResults).toMatchObject({ minimum: 1, maximum: 200 });
+    expect(Object.keys(props).sort()).toEqual(
+      ['caseSensitive', 'classFilter', 'contextLines', 'instance_id', 'maxResults', 'path', 'pattern'].sort(),
+    );
   });
 
   test('get_script_source exposes only line_range for range selection', () => {
@@ -273,7 +277,7 @@ describe('Tool schema compatibility', () => {
       get_instance_properties: 'getInstanceProperties',
       get_project_structure: 'getProjectStructure',
       set_properties: 'setProperties',
-      grep_scripts: 'grepScripts',
+      ast_grep_scripts: 'grepScripts',
       get_script_source: 'getScriptSource',
       edit_script: 'editScriptLines',
       get_attributes: 'getAttributes',

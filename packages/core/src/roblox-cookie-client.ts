@@ -27,6 +27,7 @@ interface UserAuthAssetOperation {
 export class RobloxCookieClient {
   private cookie: string;
   private csrfToken: string | null = null;
+  private timeoutMs = 15_000;
 
   constructor(cookie?: string) {
     this.cookie = cookie || process.env.ROBLOSECURITY || '';
@@ -36,31 +37,59 @@ export class RobloxCookieClient {
     return !!this.cookie;
   }
 
+  private sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  private async fetchTimeout(url: string, init: RequestInit, timeoutMs = this.timeoutMs): Promise<Response> {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: ctrl.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   private async fetchWithCsrf(
     url: string,
-    options: RequestInit = {}
+    options: RequestInit = {},
+    attempts = 3,
   ): Promise<Response> {
-    const headers: Record<string, string> = {
-      Cookie: `.ROBLOSECURITY=${this.cookie}`,
-      ...(options.headers as Record<string, string> || {}),
-    };
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      const headers: Record<string, string> = {
+        Cookie: `.ROBLOSECURITY=${this.cookie}`,
+        ...(options.headers as Record<string, string> || {}),
+      };
 
-    if (this.csrfToken) {
-      headers['X-CSRF-TOKEN'] = this.csrfToken;
-    }
+      if (this.csrfToken) {
+        headers['X-CSRF-TOKEN'] = this.csrfToken;
+      }
 
-    const response = await fetch(url, { ...options, headers });
+      try {
+        const response = await this.fetchTimeout(url, { ...options, headers });
 
-    if (response.status === 403) {
-      const newToken = response.headers.get('x-csrf-token');
-      if (newToken) {
-        this.csrfToken = newToken;
-        headers['X-CSRF-TOKEN'] = newToken;
-        return fetch(url, { ...options, headers });
+        if (response.status === 403) {
+          const newToken = response.headers.get('x-csrf-token');
+          if (newToken) {
+            this.csrfToken = newToken;
+            headers['X-CSRF-TOKEN'] = newToken;
+            return await this.fetchTimeout(url, { ...options, headers });
+          }
+        }
+        if (response.status === 429 || (response.status >= 500 && response.status <= 599)) {
+          lastErr = new Error(`HTTP ${response.status}`);
+          if (i < attempts - 1) await this.sleep(250 * 2 ** i + Math.random() * 120);
+          continue;
+        }
+        return response;
+      } catch (e) {
+        lastErr = e;
+        if (i < attempts - 1) await this.sleep(250 * 2 ** i + Math.random() * 120);
       }
     }
-
-    return response;
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   }
 
   async uploadImage(options: CookieImageUploadOptions): Promise<{ assetId: number }> {
@@ -141,14 +170,15 @@ export class RobloxCookieClient {
     action: string,
   ): Promise<UserAuthAssetOperation> {
     const body = await response.text();
+    const capped = body.length > 5_000 ? `${body.slice(0, 5_000)}…` : body;
     if (!response.ok) {
-      throw new Error(`${action} failed (${response.status}): ${body}`);
+      throw new Error(`${action} failed (${response.status}): ${capped}`);
     }
 
     try {
       return JSON.parse(body) as UserAuthAssetOperation;
     } catch {
-      throw new Error(`${action} returned malformed JSON: ${body}`);
+      throw new Error(`${action} returned malformed JSON: ${capped}`);
     }
   }
 
@@ -190,7 +220,7 @@ export class RobloxCookieClient {
 
   private async pollOperation(
     operationId: string,
-    maxAttempts = 30,
+    maxAttempts = 20,
     intervalMs = 2000,
   ): Promise<number> {
     const url = `https://apis.roblox.com/assets/user-auth/v1/operations/${encodeURIComponent(operationId)}`;
@@ -206,11 +236,12 @@ export class RobloxCookieClient {
         throw new Error('Image upload completed without an asset ID.');
       }
       if (attempt < maxAttempts - 1) {
-        await new Promise(resolve => setTimeout(resolve, intervalMs));
+        const backoff = Math.min(intervalMs * 1.5 ** attempt, 10_000) + Math.random() * 250;
+        await new Promise(resolve => setTimeout(resolve, backoff));
       }
     }
     throw new Error(
-      `Image upload timed out after ${(maxAttempts * intervalMs) / 1000}s. Operation ID: ${operationId}`,
+      `Image upload timed out. Operation ID: ${operationId}`,
     );
   }
 
@@ -220,13 +251,18 @@ export class RobloxCookieClient {
     if (!this.cookie) {
       throw new Error('ROBLOSECURITY cookie is not set.');
     }
+    if (!Array.isArray(assetIds) || assetIds.length === 0 || assetIds.length > 100) {
+      throw new Error('assetIds must be 1-100 asset IDs');
+    }
+    const clean = assetIds.map((id) => Math.floor(Number(id))).filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (clean.length !== assetIds.length) throw new Error('assetIds must all be positive integers');
 
     const response = await this.fetchWithCsrf(
       'https://itemconfiguration.roblox.com/v1/creations/get-asset-details',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assetIds }),
+        body: JSON.stringify({ assetIds: clean }),
       }
     );
 

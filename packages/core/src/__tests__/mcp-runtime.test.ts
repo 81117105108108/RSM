@@ -553,12 +553,12 @@ describe('MCP v2 tool runtime', () => {
     }
   });
 
-  test('forwards the invocation signal through the grep tool adapter', async () => {
+  test('forwards the invocation signal through the ast grep tool adapter', async () => {
     const grepScripts = jest.fn(async () => ({ content: [] }));
     const tools = { grepScripts } as unknown as RobloxStudioTools;
     const controller = new AbortController();
 
-    await TOOL_HANDLERS.grep_scripts(
+    await TOOL_HANDLERS.ast_grep_scripts(
       tools,
       { pattern: 'needle', instance_id: 'instance:test' },
       { signal: controller.signal },
@@ -567,12 +567,12 @@ describe('MCP v2 tool runtime', () => {
     expect(grepScripts).toHaveBeenCalledWith(
       'needle',
       {
-        caseSensitive: undefined,
-        usePattern: undefined,
-        contextLines: undefined,
+        caseSensitive: false,
+        usePattern: false,
+        contextLines: 0,
         maxResults: undefined,
-        maxResultsPerScript: undefined,
-        filesOnly: undefined,
+        maxResultsPerScript: 10,
+        filesOnly: true,
         path: undefined,
         classFilter: undefined,
       },

@@ -105,23 +105,51 @@ const STRUCTURED_OBJECT_SCHEMA = {
   additionalProperties: true,
 } as const;
 
-function compactPublicValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(compactPublicValue);
+const MAX_PUBLIC_STRING = 4_000;
+const MAX_PUBLIC_ARRAY = 100;
+const MAX_PUBLIC_DEPTH = 6;
+
+function truncStr(s: string): string {
+  return s.length > MAX_PUBLIC_STRING ? `${s.slice(0, MAX_PUBLIC_STRING - 1)}…` : s;
+}
+
+function compactPublicValue(value: unknown, depth = 0, budget: { truncated: boolean } = { truncated: false }): unknown {
+  if (typeof value === 'string') {
+    if (value.length > MAX_PUBLIC_STRING) { budget.truncated = true; return truncStr(value); }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_PUBLIC_ARRAY) budget.truncated = true;
+    const cap = value.length > MAX_PUBLIC_ARRAY ? value.slice(0, MAX_PUBLIC_ARRAY) : value;
+    // Fast path: primitive arrays need no recursion.
+    let needRecurse = false;
+    for (const e of cap) {
+      if (e && typeof e === 'object') { needRecurse = true; break; }
+      if (typeof e === 'string' && (e as string).length > MAX_PUBLIC_STRING) { needRecurse = true; break; }
+    }
+    if (!needRecurse) return cap;
+    if (depth >= MAX_PUBLIC_DEPTH) { budget.truncated = true; return cap.slice(0, 25); }
+    return cap.map((e) => compactPublicValue(e, depth + 1, budget));
+  }
   if (!value || typeof value !== 'object') return value;
+  if (depth >= MAX_PUBLIC_DEPTH) { budget.truncated = true; return { truncated: true }; }
 
   // Nested objects can contain user-defined keys (attributes, properties, etc.).
   // Only omit undefined values; fromEntries also preserves own "__proto__" keys.
   return Object.fromEntries(Object.entries(value)
     .filter(([, child]) => child !== undefined)
-    .map(([key, child]) => [key, compactPublicValue(child)]));
+    .map(([key, child]) => [key, compactPublicValue(child, depth + 1, budget)]));
 }
 
 function compactPublicEnvelope(value: object): Record<string, unknown> {
   // Metadata names are reserved on the tool response envelope, not its payload.
   // Producers of nested server metadata must explicitly project public fields.
-  return Object.fromEntries(Object.entries(value)
+  const budget = { truncated: false };
+  const out = Object.fromEntries(Object.entries(value)
     .filter(([key, child]) => child !== undefined && !Object.hasOwn(INTERNAL_ENVELOPE_KEYS, key))
-    .map(([key, child]) => [key, compactPublicValue(child)]));
+    .map(([key, child]) => [key, compactPublicValue(child, 1, budget)])) as Record<string, unknown>;
+  if (budget.truncated && !('truncated' in out)) out.truncated = true;
+  return out;
 }
 
 function asStructuredObject(value: unknown): Record<string, unknown> | undefined {
@@ -206,19 +234,19 @@ function publicRoutingError(error: RoutingFailure): Record<string, unknown> {
 
 export function publicToolErrorBody(name: string, error: unknown): Record<string, unknown> {
   if (error instanceof MultiplayerGroupInUseError) {
-    return { error: error.code, message: error.message, multiplayer_group_id: error.groupId };
+    return { error: error.code, message: error.message.slice(0, 300), multiplayer_group_id: error.groupId };
   }
   if (error instanceof StudioLaunchPreDispatchError) {
     return compactPublicEnvelope(error.toResponseBody());
   }
   if (error instanceof RoutingFailure) return publicRoutingError(error);
   if (error instanceof RequestFailure) {
-    return { error: error.code, message: error.message.slice(0, 500), ...error.details };
+    return { error: error.code, message: error.message.slice(0, 300), ...error.details };
   }
 
   console.error(`[tool:${name}]`, error);
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : 'Tool execution failed.';
-  return { error: 'tool_failed', message: message.slice(0, 500) };
+  return { error: 'tool_failed', message: message.slice(0, 300) };
 }
 
 function concise(text: string, maxLength: number, firstSentence = false): string {
@@ -287,9 +315,9 @@ export function serverInstructions(definitions: readonly ToolDefinition[]): stri
       'Supply a unique operation_id to execute_luau or set_properties when retry safety matters. After a timeout, query get_request_status with that ID before retrying; unknown status does not mean unexecuted.',
     );
   }
-  if (has('search_objects', 'get_project_structure', 'grep_scripts', 'execute_luau')) {
+  if (has('search_objects', 'get_project_structure', 'ast_grep_scripts', 'execute_luau')) {
     instructions.push(
-      'Use search_objects, get_project_structure, or grep_scripts for standard discovery. Use execute_luau for custom traversal or bulk edits.',
+      'Use search_objects, get_project_structure, or ast_grep_scripts for standard discovery. Use execute_luau for custom traversal or bulk edits.',
     );
   }
   if (has('edit_script')) {

@@ -361,48 +361,34 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     }
   },
 
-  // === Script Search ===
+  // === Script Search (AST) ===
   {
-    name: 'grep_scripts',
+    name: 'ast_grep_scripts',
     category: 'read',
-    description: 'Use to search script sources.',
+    description: 'Use for structural code search.',
     inputSchema: {
       type: 'object',
       properties: {
         pattern: {
           type: 'string',
-          maxLength: 4096,
-          description: 'Literal or Lua pattern; max 4096 UTF-8 bytes.'
+          maxLength: 512,
+          description: 'Identifier or literal; max 512 bytes.'
         },
         caseSensitive: {
           type: 'boolean',
-          description: 'Lua patterns are always case-sensitive.'
-        },
-        usePattern: {
-          type: 'boolean',
-          description: 'Enable Lua pattern with top-level | (not PCRE).'
+          description: 'Case-sensitive match; default false.'
         },
         contextLines: {
           type: 'integer',
           minimum: 0,
-          maximum: 100,
-          description: 'Surrounding lines (0-100; default 0).'
+          maximum: 5,
+          description: 'Surrounding lines (0-5; default 0).'
         },
         maxResults: {
           type: 'integer',
           minimum: 1,
-          maximum: 10000,
-          description: 'Default 100.'
-        },
-        maxResultsPerScript: {
-          type: 'integer',
-          minimum: 0,
-          maximum: 10000,
-          description: 'Per-script cap; 0 is unlimited.'
-        },
-        filesOnly: {
-          type: 'boolean',
-          description: 'Paths only; default false.'
+          maximum: 200,
+          description: 'Default 50.'
         },
         path: {
           type: 'string',
@@ -1720,7 +1706,7 @@ export const MINIMAL_TOOL_NAMES: readonly string[] = [
   'get_project_structure',
   'get_script_source',
   'get_attributes',
-  'grep_scripts',
+  'ast_grep_scripts',
   'get_connected_instances',
   'get_request_status',
   'get_runtime_logs',

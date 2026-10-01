@@ -334,26 +334,18 @@ describe('HTTP Server', () => {
       );
     });
 
-    test('grep_scripts uses only usePattern for pattern mode', async () => {
+    test('ast_grep_scripts uses structural fast path', async () => {
       const grepScripts = jest.fn(async () => ({ content: [] }));
       const fakeTools = { grepScripts } as unknown as RobloxStudioTools;
 
-      await TOOL_HANDLERS.grep_scripts(fakeTools, {
-        pattern: 'foo|bar',
-        isRegex: true,
+      await TOOL_HANDLERS.ast_grep_scripts(fakeTools, {
+        pattern: 'foo',
+        syntax: 'literal',
         instance_id: 'place:test',
       });
-      expect(grepScripts).toHaveBeenLastCalledWith('foo|bar', expect.objectContaining({
-        usePattern: undefined,
-      }), 'place:test', undefined);
-
-      await TOOL_HANDLERS.grep_scripts(fakeTools, {
-        pattern: 'foo|bar',
-        usePattern: true,
-        instance_id: 'place:test',
-      });
-      expect(grepScripts).toHaveBeenLastCalledWith('foo|bar', expect.objectContaining({
-        usePattern: true,
+      expect(grepScripts).toHaveBeenLastCalledWith('foo', expect.objectContaining({
+        usePattern: false,
+        filesOnly: true,
       }), 'place:test', undefined);
     });
   });
