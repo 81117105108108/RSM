@@ -60,4 +60,10 @@ run('npm publish -w packages/robloxstudio-mcp');
 console.log('\nPublishing robloxstudio-mcp-inspector...');
 run('npm publish -w packages/robloxstudio-mcp-inspector');
 
+console.log('\nPublishing @quillllllll/rsm...');
+run('npm publish -w packages/rsm --access public');
+
+console.log('\nPublishing @quillllllll/rsm-inspector...');
+run('npm publish -w packages/rsm-inspector --access public');
+
 console.log('\nAll packages published successfully!');
